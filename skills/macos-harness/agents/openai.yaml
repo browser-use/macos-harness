@@ -1,0 +1,4 @@
+interface:
+  display_name: "macOS Harness"
+  short_description: "Simple visual control for the whole Mac"
+  default_prompt: "Use $macos-harness to see and control my Mac without moving my physical cursor or taking focus."
