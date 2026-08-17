@@ -1,6 +1,7 @@
 name: Publish
 
 on:
+  workflow_dispatch:
   release:
     types: [published]
 
@@ -10,7 +11,7 @@ permissions:
 
 jobs:
   pypi:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     environment: pypi
     steps:
       - uses: actions/checkout@v4
