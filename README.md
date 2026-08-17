@@ -1,4 +1,4 @@
-<img src="https://raw.githubusercontent.com/browser-use/macos-harness/main/static/banner-ink.svg" alt="macOS Harness" width="100%" />
+<img src="static/banner-ink.svg" alt="macOS Harness" width="100%" />
 
 # macOS Harness ⌘
 
