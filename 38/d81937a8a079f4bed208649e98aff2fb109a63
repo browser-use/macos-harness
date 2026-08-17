@@ -1,0 +1,129 @@
+pyproject.toml
+  s_86a8c57c5991a2::t_98781502affd80 1-5,7,10,26,29-31,39,47,52-54
+  s_86a8c57c5991a2::t_40732db778382a 28
+  s_dd5a1b363e6996::t_4ebfcc7ece4778 6,40,48,51
+  s_86a8c57c5991a2::t_b4964c00c1fde4 32-38
+  s_dd5a1b363e6996::t_2539ffad5f8c73 49-50
+  s_249b45681a0cd3::t_2654894dd92b65 8-9,11-25,27,41-45
+skills/macos-harness/SKILL.md
+  s_249b45681a0cd3::t_0ec48406557f18 90-92
+src/macos_harness/telemetry.py
+  s_249b45681a0cd3::t_c73d3914dd04ff 47-49
+  s_249b45681a0cd3::t_4190cbc26ca612 107,180-181
+  s_249b45681a0cd3::t_47d6d5a8782ce8 1-46,50-55,57-106,108-179,182-195
+  s_249b45681a0cd3::t_2654894dd92b65 56
+.github/workflows/publish.yml
+  s_249b45681a0cd3::t_2654894dd92b65 1-21
+src/macos_harness/overlay.py
+  s_dd5a1b363e6996::t_4ebfcc7ece4778 1-319
+README.md
+  s_dd5a1b363e6996::t_11400688920540 41
+  s_dd5a1b363e6996::t_2539ffad5f8c73 3,23,27-28,37,48
+  s_dd5a1b363e6996::t_2548614b9c5bb8 2,4,7,21-22,24,26,29-30,33,35-36,39,42,44-45,74,82,84,87,92,96
+  s_dd5a1b363e6996::t_4ebfcc7ece4778 1
+  s_249b45681a0cd3::t_caa06b33c8151c 5-6,8-20,25,31-32,34,38,40,43,46-47,49-73,75-81,83,85-86,88-91,93-95,97
+CONTRIBUTING.md
+  s_249b45681a0cd3::t_2654894dd92b65 1-13
+src/macos_harness/cli.py
+  s_249b45681a0cd3::t_47d6d5a8782ce8 10,65-68,88-92,99-100,103-104,107-108,118-119,128-129,139-140,144-147,151-154
+  s_dd5a1b363e6996::t_4ebfcc7ece4778 1-9,11-16,19-52,54-64,69-87,93-98,101-102,105-106,109-117,120-127,130-138,141-143,148-150,155-158
+  s_249b45681a0cd3::t_4190cbc26ca612 17-18
+  s_249b45681a0cd3::t_c73d3914dd04ff 53
+.gitignore
+  s_86a8c57c5991a2::t_7060556ba610d6 1-4,7
+  s_249b45681a0cd3::t_0ec48406557f18 5
+  s_86a8c57c5991a2::t_2b168955df68e9 8-10
+  s_dd5a1b363e6996::t_804d995478cc50 6
+src/macos_harness/pointer.py
+  ai_agent 1-24
+LICENSE
+  s_249b45681a0cd3::t_2654894dd92b65 1-21
+.github/workflows/ci.yml
+  s_249b45681a0cd3::t_2654894dd92b65 1-20
+tests/test_telemetry.py
+  s_249b45681a0cd3::t_2654894dd92b65 1-5,7-58
+  s_249b45681a0cd3::t_4190cbc26ca612 6
+src/macos_harness/macos.py
+  s_dd5a1b363e6996::t_4ebfcc7ece4778 1-1459
+tests/test_browser.py
+  s_249b45681a0cd3::t_1f828afed3eab9 12,47,52
+  s_249b45681a0cd3::t_e7163ad7978931 1-11,13-46,48-51,53-54
+tests/test_overlay.py
+  s_86a8c57c5991a2::t_f510aaa9108244 67-77
+  s_86a8c57c5991a2::t_f8ea6796902969 1-4,8-45,47-64,66
+  s_86a8c57c5991a2::t_8c98f21a2753e9 46
+  s_dd5a1b363e6996::t_4ebfcc7ece4778 5-7,65
+SECURITY.md
+  s_249b45681a0cd3::t_2654894dd92b65 1-9
+src/macos_harness/__init__.py
+  s_dd5a1b363e6996::t_4ebfcc7ece4778 1-12
+tests/test_macos.py
+  s_86a8c57c5991a2::t_e52fb4ff512d6e 206-210,214
+  s_86a8c57c5991a2::t_8b5075c58e26fb 219-241,243-250,286,324-325
+  s_86a8c57c5991a2::t_e917069d01a64f 372-382
+  s_86a8c57c5991a2::t_f510aaa9108244 73-96,495,502
+  s_dd5a1b363e6996::t_04be85e250e87a 183,192,213,215,218,242,330,339,349,351,353,357-358,360,362,364,385,401,406,416,420,425,429,431-433,473-474,498
+  s_dd5a1b363e6996::t_e99efe2d5ef321 11,119-135,141-143,149-165,167-171,173-178,251-285,287-323,468-472,484-492
+  s_86a8c57c5991a2::t_c598b8eb50974a 10,12-16
+  s_86a8c57c5991a2::t_c136b90720a3a8 6,326-329,331-338,340-348,383-384,386,388-399,405,407-412,440-467,475-482,493-494
+  s_86a8c57c5991a2::t_0b0e8a299b79f0 22
+  s_86a8c57c5991a2::t_12fc99ea988578 97-118
+  s_dd5a1b363e6996::t_4ebfcc7ece4778 8-9
+  s_86a8c57c5991a2::t_98781502affd80 1-5,7,17-21,23-35,37-44,367-371
+  s_dd5a1b363e6996::t_bc2351806a8e8f 136-140
+  s_86a8c57c5991a2::t_662eba7e5b4e28 350,352,354-356,359,361,363,365-366
+  s_86a8c57c5991a2::t_a624fa04acafa6 387,400,402-404,413-415,417-419,421-424,426-428,430,434-439
+  s_86a8c57c5991a2::t_bf88ebe2ce669b 60-61,185-189
+  s_86a8c57c5991a2::t_30e48281723880 202-205,211-212,216-217
+  s_86a8c57c5991a2::t_10e7f16ba4fc4c 496-497,499-501
+  s_dd5a1b363e6996::t_57a8e28b48bb4e 62-72
+  s_86a8c57c5991a2::t_0f986a1c5c29ff 36,45-59
+  s_86a8c57c5991a2::t_f4d83229c64c87 483
+  s_dd5a1b363e6996::t_4b8ec81811e6f6 144-148,166,172
+uv.lock
+  ai_agent 20-251
+install.md
+  s_249b45681a0cd3::t_2654894dd92b65 1-37
+src/macos_harness/browser.py
+  s_249b45681a0cd3::t_d61672f0959b30 7-8,129-133,136-139,144-149
+  s_249b45681a0cd3::t_1f828afed3eab9 27,64-68
+  s_249b45681a0cd3::t_18499d36810025 71-91,93-105,134-135
+  s_249b45681a0cd3::t_d9e63f647af531 48
+  s_249b45681a0cd3::t_e7163ad7978931 1-6,9-25,28-47,49-63,69-70,106-128,140-143,150-168
+  s_249b45681a0cd3::t_334fc1e5ecb158 92
+  s_249b45681a0cd3::t_e0bb592cfa8b7e 26
+macos-harness
+  s_dd5a1b363e6996::t_4ebfcc7ece4778 1-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "38d81937a8a079f4bed208649e98aff2fb109a63",
+  "prompts": {},
+  "sessions": {
+    "s_249b45681a0cd3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a01059-1879-70d2-a636-749f25fafa51",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    },
+    "s_86a8c57c5991a2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0017e-7b13-79f2-8e02-196c513f0dbd",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    },
+    "s_dd5a1b363e6996": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a00ba6-f536-77c0-900c-f49c704058d6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}
