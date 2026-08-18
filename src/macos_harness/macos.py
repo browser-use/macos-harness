@@ -650,7 +650,7 @@ class MacOS:
         include_menu_bar: bool = False,
         extra_attributes: Iterable[str] = (),
         include_actions: bool = True,
-        include_settable: bool = True,
+        include_settable: bool = False,
     ) -> dict[str, Any]:
         self._ensure_accessibility()
         _, info = self._resolve_app(app)
@@ -1314,6 +1314,7 @@ class MacOS:
         x: float | None = None,
         y: float | None = None,
         coordinate_space: str = "screenshot",
+        step_delay: float = 0.01,
     ) -> None:
         self._ensure_accessibility()
         self._ensure_post_events()
@@ -1352,16 +1353,23 @@ class MacOS:
             if point:
                 AS.CGEventSetLocation(event, point)
             self._post(event, pid)
-            time.sleep(0.01)
+            time.sleep(max(0.0, float(step_delay)))
             self._guard_focus(focus_before, pid, "scroll")
 
-    def type(self, text: str, *, app: str | None = None) -> None:
+    def type(
+        self,
+        text: str,
+        *,
+        app: str | None = None,
+        inter_key_delay: float = 0.01,
+    ) -> None:
         self._ensure_accessibility()
         self._ensure_post_events()
         pid = self._pid(app)
         if pid is None:
             raise MacOSError("Keyboard input requires an app or prior app snapshot")
         focus_before = self._frontmost_app()
+        delay = max(0.0, float(inter_key_delay))
         aliases = {" ": "space", "\n": "return", "\r": "return", "\t": "tab"}
         for character in text:
             base = _SHIFTED_CHARACTERS.get(
@@ -1382,7 +1390,7 @@ class MacOS:
             AS.CGEventSetFlags(up, flags)
             self._post(down, pid)
             self._post(up, pid)
-            time.sleep(0.01)
+            time.sleep(delay)
             self._guard_focus(focus_before, pid, "typing")
 
     def key(self, key: str, *, app: str | None = None) -> None:
