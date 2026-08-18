@@ -5,6 +5,9 @@ __pycache__/
 dist/
 tmp/
 
+# Rust experiment build artifacts.
+experiments/rust/target/
+
 # Local task artifacts can contain private workspace data.
 slack-*.json
 slack-*.md
