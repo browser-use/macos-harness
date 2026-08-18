@@ -12,13 +12,14 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from .browser import BrowserHarness
-from .macos import MacOS, MacOSError
 from .telemetry import capture_cli
 from .telemetry import run_cli as run_telemetry_cli
 
 
 def _namespace() -> dict[str, Any]:
+    from .browser import BrowserHarness
+    from .macos import MacOS
+
     return {
         "__name__": "__macos_harness__",
         "browser": BrowserHarness(),
@@ -92,6 +93,8 @@ def main(argv: list[str] | None = None) -> int:
     result: int | None = None
     try:
         if args.command == "doctor":
+            from .macos import MacOS
+
             mac = MacOS()
             if args.request:
                 mac.request_permissions()
@@ -99,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
             result = 0
             return result
         if args.command == "apps":
+            from .macos import MacOS
+
             print(json.dumps(MacOS().list_apps(), indent=2))
             result = 0
             return result
@@ -118,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
             result = 0
             return result
         if args.command == "see":
+            from .macos import MacOS
+
             result = MacOS().see(
                 args.app,
                 max_width=args.max_width,
@@ -128,6 +135,8 @@ def main(argv: list[str] | None = None) -> int:
             result = 0
             return result
         if args.command == "state":
+            from .macos import MacOS
+
             state = MacOS().get_app_state(
                 args.app,
                 screenshot=args.screenshot,
@@ -146,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
             result = _execute(sys.stdin.read())
             return result
         parser.error(f"unknown command: {args.command}")
-    except (MacOSError, RuntimeError) as exc:
+    except RuntimeError as exc:
         print(f"macos-harness: {exc}", file=sys.stderr)
         result = 1
         return result

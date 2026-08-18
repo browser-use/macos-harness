@@ -500,3 +500,290 @@ def test_see_bounds_image_and_draws_virtual_pointer(
     assert hidden["virtual_pointer"]["visible"] is False
     with Image.open(path) as image:
         assert image.getpixel((205, 170)) == (255, 255, 255, 255)
+
+
+def test_png_size_rejects_non_png(tmp_path: Path) -> None:
+    path = tmp_path / "image.png"
+    path.write_bytes(b"not a png at all")
+    with pytest.raises(MacOSError, match="not a PNG"):
+        _png_size(path)
+
+
+def test_screen_point_rejects_unknown_coordinate_space() -> None:
+    mac = MacOS()
+    mac._last_screenshot = {
+        "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0},
+        "scale_x": 1.0,
+        "scale_y": 1.0,
+    }
+    with pytest.raises(MacOSError, match="coordinate_space"):
+        mac._screen_point(10, 20, "bogus")
+
+
+def test_key_rejects_empty_and_unknown(monkeypatch) -> None:
+    mac = MacOS()
+    monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
+    monkeypatch.setattr(mac, "_ensure_post_events", lambda: None)
+    monkeypatch.setattr(mac, "_pid", lambda app: 42)
+    with pytest.raises(MacOSError, match="must not be empty"):
+        mac.key("", app="Slack")
+    with pytest.raises(MacOSError, match="Unsupported key"):
+        mac.key("qq", app="Slack")
+    with pytest.raises(MacOSError, match="Unsupported modifier"):
+        mac.key("fn+a", app="Slack")
+
+
+def test_key_shift_symbol_posts_shift_flag(monkeypatch) -> None:
+    mac = MacOS()
+    posted = []
+    monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
+    monkeypatch.setattr(mac, "_ensure_post_events", lambda: None)
+    monkeypatch.setattr(mac, "_pid", lambda app: 42)
+    monkeypatch.setattr(mac, "_frontmost_app", lambda: None)
+    monkeypatch.setattr(macos_module.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        macos_module.AS,
+        "CGEventCreateKeyboardEvent",
+        lambda source, keycode, down: {"keycode": keycode, "down": down},
+    )
+    monkeypatch.setattr(
+        macos_module.AS,
+        "CGEventSetFlags",
+        lambda event, flags: event.update(flags=flags),
+    )
+    monkeypatch.setattr(mac, "_post", lambda event, pid: posted.append(event))
+
+    mac.key("!", app="Slack")
+
+    shift = macos_module.AS.kCGEventFlagMaskShift
+    assert [event["keycode"] for event in posted if event["down"]] == [18]
+    assert all(event["flags"] == shift for event in posted if event["down"])
+
+
+def test_key_shift_symbol_with_modifier(monkeypatch) -> None:
+    mac = MacOS()
+    posted = []
+    monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
+    monkeypatch.setattr(mac, "_ensure_post_events", lambda: None)
+    monkeypatch.setattr(mac, "_pid", lambda app: 42)
+    monkeypatch.setattr(mac, "_frontmost_app", lambda: None)
+    monkeypatch.setattr(macos_module.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        macos_module.AS,
+        "CGEventCreateKeyboardEvent",
+        lambda source, keycode, down: {"keycode": keycode, "down": down},
+    )
+    monkeypatch.setattr(
+        macos_module.AS,
+        "CGEventSetFlags",
+        lambda event, flags: event.update(flags=flags),
+    )
+    monkeypatch.setattr(mac, "_post", lambda event, pid: posted.append(event))
+
+    mac.key("shift+!", app="Slack")
+
+    shift = macos_module.AS.kCGEventFlagMaskShift
+    down = [event for event in posted if event["down"]]
+    assert [event["keycode"] for event in down] == [56, 18]
+    assert down[-1]["flags"] == shift
+
+
+def test_key_trailing_plus_is_preserved_as_base(monkeypatch) -> None:
+    mac = MacOS()
+    posted = []
+    monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
+    monkeypatch.setattr(mac, "_ensure_post_events", lambda: None)
+    monkeypatch.setattr(mac, "_pid", lambda app: 42)
+    monkeypatch.setattr(mac, "_frontmost_app", lambda: None)
+    monkeypatch.setattr(macos_module.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        macos_module.AS,
+        "CGEventCreateKeyboardEvent",
+        lambda source, keycode, down: {"keycode": keycode, "down": down},
+    )
+    monkeypatch.setattr(
+        macos_module.AS,
+        "CGEventSetFlags",
+        lambda event, flags: event.update(flags=flags),
+    )
+    monkeypatch.setattr(mac, "_post", lambda event, pid: posted.append(event))
+
+    mac.key("cmd++", app="Slack")
+
+    command = macos_module.AS.kCGEventFlagMaskCommand
+    shift = macos_module.AS.kCGEventFlagMaskShift
+    down = [event for event in posted if event["down"]]
+    assert [event["keycode"] for event in down] == [55, 24]
+    assert down[0]["flags"] == command
+    assert down[-1]["flags"] == command | shift
+
+
+def test_drag_posts_down_drag_up_sequence(monkeypatch) -> None:
+    mac = MacOS()
+    posted = []
+    monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
+    monkeypatch.setattr(mac, "_ensure_post_events", lambda: None)
+    monkeypatch.setattr(mac, "_pid", lambda app: 42)
+    monkeypatch.setattr(mac, "_frontmost_app", lambda: None)
+    monkeypatch.setattr(mac._overlay, "move", lambda *args, **kwargs: None)
+    monkeypatch.setattr(macos_module.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        macos_module.AS,
+        "CGEventCreateMouseEvent",
+        lambda source, event_type, point, button: {"type": event_type, "point": point},
+    )
+    monkeypatch.setattr(mac, "_post", lambda event, pid: posted.append(event))
+
+    mac.drag(0, 0, 100, 100, app="Slack", coordinate_space="screen", steps=4)
+
+    types = [event["type"] for event in posted]
+    assert types[0] == macos_module.AS.kCGEventLeftMouseDown
+    assert types[-1] == macos_module.AS.kCGEventLeftMouseUp
+    assert types[1:-1] == [
+        macos_module.AS.kCGEventLeftMouseDragged,
+    ] * 4
+
+
+def test_scroll_splits_pixel_delta_into_steps(monkeypatch) -> None:
+    mac = MacOS()
+    posted = []
+    monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
+    monkeypatch.setattr(mac, "_ensure_post_events", lambda: None)
+    monkeypatch.setattr(mac, "_pid", lambda app: 42)
+    monkeypatch.setattr(mac, "_frontmost_app", lambda: None)
+    monkeypatch.setattr(mac._overlay, "move", lambda *args, **kwargs: None)
+    monkeypatch.setattr(macos_module.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        macos_module.AS,
+        "CGEventCreateScrollWheelEvent",
+        lambda source, unit, wheels, y, x: {"unit": unit, "y": y, "x": x},
+    )
+    monkeypatch.setattr(mac, "_post", lambda event, pid: posted.append(event))
+
+    mac.scroll(250, app="Slack", unit="pixel")
+
+    assert [event["y"] for event in posted] == [100, 100, 50]
+    assert all(
+        event["unit"] == macos_module.AS.kCGScrollEventUnitPixel for event in posted
+    )
+
+
+def test_windows_filters_layer_and_min_size(monkeypatch) -> None:
+    mac = MacOS()
+    monkeypatch.setattr(mac, "_resolve_app", lambda app: (object(), {"pid": 42}))
+    owner = "kCGWindowOwnerPID"
+    layer = "kCGWindowLayer"
+    bounds = "kCGWindowBounds"
+    number = "kCGWindowNumber"
+    name = "kCGWindowName"
+    onscreen = "kCGWindowIsOnscreen"
+    alpha = "kCGWindowAlpha"
+    for key, value in (
+        ("kCGWindowOwnerPID", owner),
+        ("kCGWindowLayer", layer),
+        ("kCGWindowBounds", bounds),
+        ("kCGWindowNumber", number),
+        ("kCGWindowName", name),
+        ("kCGWindowIsOnscreen", onscreen),
+        ("kCGWindowAlpha", alpha),
+    ):
+        monkeypatch.setattr(macos_module.AS, key, value)
+    windows = [
+        {
+            owner: 42,
+            layer: 0,
+            bounds: {"X": 0, "Y": 0, "Width": 100, "Height": 100},
+            number: 1,
+            name: "win1",
+            onscreen: True,
+            alpha: 1.0,
+        },
+        {owner: 42, layer: 25, bounds: {"Width": 100, "Height": 100}, number: 2},
+        {owner: 42, layer: 0, bounds: {"Width": 10, "Height": 10}, number: 3},
+        {owner: 99, layer: 0, bounds: {"Width": 100, "Height": 100}, number: 4},
+    ]
+    monkeypatch.setattr(
+        macos_module.AS, "CGWindowListCopyWindowInfo", lambda options, wid: windows
+    )
+
+    result = mac.windows("42")
+
+    assert len(result) == 1
+    assert result[0]["window_id"] == 1
+
+
+def test_capture_screenshot_fails_on_screencapture_error(monkeypatch) -> None:
+    mac = MacOS()
+    monkeypatch.setattr(mac, "_ensure_screen_recording", lambda: None)
+    monkeypatch.setattr(mac, "_resolve_app", lambda app: (object(), {"pid": 42}))
+    monkeypatch.setattr(mac, "windows", lambda app: [{"window_id": 7}])
+    monkeypatch.setattr(
+        macos_module.subprocess,
+        "run",
+        lambda *args, **kwargs: type(
+            "R", (), {"returncode": 1, "stderr": "boom", "stdout": ""}
+        )(),
+    )
+
+    with pytest.raises(MacOSError, match="boom"):
+        mac.capture_screenshot("x")
+
+
+def test_clipboard_read_write(monkeypatch) -> None:
+    import AppKit
+
+    mac = MacOS()
+
+    class Pasteboard:
+        text = None
+
+        def stringForType_(self, kind):
+            return self.text
+
+        def setString_forType_(self, text, kind):
+            self.text = text
+            return True
+
+        def clearContents(self):
+            self.text = None
+
+    pasteboard = Pasteboard()
+
+    class FakeNSPasteboard:
+        @staticmethod
+        def generalPasteboard():
+            return pasteboard
+
+    monkeypatch.setattr(AppKit, "NSPasteboard", FakeNSPasteboard)
+    monkeypatch.setattr(AppKit, "NSPasteboardTypeString", "public.utf8-plain-text")
+
+    assert mac.clipboard_read() is None
+    mac.clipboard_write("hello")
+    assert mac.clipboard_read() == "hello"
+
+
+def test_clipboard_write_raises_when_pasteboard_rejects(monkeypatch) -> None:
+    import AppKit
+
+    mac = MacOS()
+
+    class Pasteboard:
+        def stringForType_(self, kind):
+            return None
+
+        def setString_forType_(self, text, kind):
+            return False
+
+        def clearContents(self):
+            pass
+
+    class FakeNSPasteboard:
+        @staticmethod
+        def generalPasteboard():
+            return Pasteboard()
+
+    monkeypatch.setattr(AppKit, "NSPasteboard", FakeNSPasteboard)
+    monkeypatch.setattr(AppKit, "NSPasteboardTypeString", "public.utf8-plain-text")
+
+    with pytest.raises(MacOSError, match="clipboard"):
+        mac.clipboard_write("hello")

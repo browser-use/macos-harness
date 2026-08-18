@@ -436,10 +436,20 @@ class MacOS:
             time.sleep(0.05)
         return root
 
+    _RETRYABLE_AX_ERRORS = frozenset(
+        getattr(AS, name, -1)
+        for name in ("kAXErrorCannotComplete", "kAXErrorTimeout", "kAXErrorAPIDisabled")
+    )
+
     @staticmethod
     def _copy_attribute(element: Any, attribute: str) -> Any | None:
-        error, value = AS.AXUIElementCopyAttributeValue(element, attribute, None)
-        return value if error == _AX_SUCCESS else None
+        for attempt in range(3):
+            error, value = AS.AXUIElementCopyAttributeValue(element, attribute, None)
+            if error == _AX_SUCCESS or error not in MacOS._RETRYABLE_AX_ERRORS:
+                return value if error == _AX_SUCCESS else None
+            if attempt < 2:
+                time.sleep(0.01 * (attempt + 1))
+        return None
 
     @staticmethod
     def _copy_attributes(
@@ -1388,17 +1398,34 @@ class MacOS:
     def key(self, key: str, *, app: str | None = None) -> None:
         self._ensure_accessibility()
         self._ensure_post_events()
-        parts = [part.casefold() for part in re.split(r"[+-]", key) if part]
-        if not parts:
-            raise MacOSError("Key must not be empty")
-        base = parts[-1]
-        modifiers = parts[:-1]
-        try:
+        raw = key.casefold()
+        if raw and raw[-1] in "+-":
+            base = raw[-1]
+            modifiers: list[str] = [
+                part for part in re.split(r"[+-]", raw[:-1]) if part
+            ]
+            base_flags = 0
+        elif raw in _SHIFTED_CHARACTERS and raw not in _KEYCODES:
+            base = raw
+            modifiers = []
+            base_flags = AS.kCGEventFlagMaskShift
+        else:
+            parts = [part for part in re.split(r"[+-]", raw) if part]
+            if not parts:
+                raise MacOSError("Key must not be empty")
+            base = parts[-1]
+            modifiers = parts[:-1]
+            base_flags = 0
+        if base in _KEYCODES:
             keycode = _KEYCODES[base]
-        except KeyError as exc:
-            raise MacOSError(
-                f"Unsupported key {base!r}; use mac.type() for arbitrary text"
-            ) from exc
+        else:
+            unshifted = _SHIFTED_CHARACTERS.get(base)
+            if unshifted is None or unshifted not in _KEYCODES:
+                raise MacOSError(
+                    f"Unsupported key {base!r}; use mac.type() for arbitrary text"
+                )
+            keycode = _KEYCODES[unshifted]
+            base_flags |= AS.kCGEventFlagMaskShift
         parsed_modifiers: list[tuple[int, int]] = []
         seen_keycodes: set[int] = set()
         for modifier in modifiers:
@@ -1427,10 +1454,11 @@ class MacOS:
                 pressed.append((modifier_keycode, modifier_flag))
                 time.sleep(0.005)
 
+            base_flags_all = active_flags | base_flags
             down = AS.CGEventCreateKeyboardEvent(self._event_source, keycode, True)
             up = AS.CGEventCreateKeyboardEvent(self._event_source, keycode, False)
-            AS.CGEventSetFlags(down, active_flags)
-            AS.CGEventSetFlags(up, active_flags)
+            AS.CGEventSetFlags(down, base_flags_all)
+            AS.CGEventSetFlags(up, base_flags_all)
             self._post(down, pid)
             self._post(up, pid)
         finally:
@@ -1443,6 +1471,26 @@ class MacOS:
                 self._post(event, pid)
         time.sleep(0.01)
         self._guard_focus(focus_before, pid, f"key {key!r}")
+
+    # --- clipboard ------------------------------------------------------
+
+    def clipboard_read(self) -> str | None:
+        """Return the current text on the system clipboard, if any."""
+        _require_macos()
+        from AppKit import NSPasteboard, NSPasteboardTypeString
+
+        pasteboard = NSPasteboard.generalPasteboard()
+        return pasteboard.stringForType_(NSPasteboardTypeString)
+
+    def clipboard_write(self, text: str) -> None:
+        """Replace the system clipboard with ``text``; never touches focus."""
+        _require_macos()
+        from AppKit import NSPasteboard, NSPasteboardTypeString
+
+        pasteboard = NSPasteboard.generalPasteboard()
+        pasteboard.clearContents()
+        if not pasteboard.setString_forType_(text, NSPasteboardTypeString):
+            raise MacOSError("Failed to write text to the clipboard")
 
     # --- Apple Events escape hatch --------------------------------------
 
