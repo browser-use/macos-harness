@@ -1399,12 +1399,18 @@ class MacOS:
         self._ensure_accessibility()
         self._ensure_post_events()
         raw = key.casefold()
-        if raw in _SHIFTED_CHARACTERS and raw not in _KEYCODES:
+        if raw and raw[-1] in "+-":
+            base = raw[-1]
+            modifiers: list[str] = [
+                part for part in re.split(r"[+-]", raw[:-1]) if part
+            ]
+            base_flags = 0
+        elif raw in _SHIFTED_CHARACTERS and raw not in _KEYCODES:
             base = raw
-            modifiers: list[str] = []
+            modifiers = []
             base_flags = AS.kCGEventFlagMaskShift
         else:
-            parts = [part.casefold() for part in re.split(r"[+-]", raw) if part]
+            parts = [part for part in re.split(r"[+-]", raw) if part]
             if not parts:
                 raise MacOSError("Key must not be empty")
             base = parts[-1]
@@ -1435,7 +1441,7 @@ class MacOS:
         if pid is None:
             raise MacOSError("Keyboard input requires an app or prior app snapshot")
         focus_before = self._frontmost_app()
-        active_flags = base_flags
+        active_flags = 0
         pressed: list[tuple[int, int]] = []
         try:
             for modifier_keycode, modifier_flag in parsed_modifiers:
@@ -1448,10 +1454,11 @@ class MacOS:
                 pressed.append((modifier_keycode, modifier_flag))
                 time.sleep(0.005)
 
+            base_flags_all = active_flags | base_flags
             down = AS.CGEventCreateKeyboardEvent(self._event_source, keycode, True)
             up = AS.CGEventCreateKeyboardEvent(self._event_source, keycode, False)
-            AS.CGEventSetFlags(down, active_flags)
-            AS.CGEventSetFlags(up, active_flags)
+            AS.CGEventSetFlags(down, base_flags_all)
+            AS.CGEventSetFlags(up, base_flags_all)
             self._post(down, pid)
             self._post(up, pid)
         finally:
@@ -1482,7 +1489,8 @@ class MacOS:
 
         pasteboard = NSPasteboard.generalPasteboard()
         pasteboard.clearContents()
-        pasteboard.setString_forType_(text, NSPasteboardTypeString)
+        if not pasteboard.setString_forType_(text, NSPasteboardTypeString):
+            raise MacOSError("Failed to write text to the clipboard")
 
     # --- Apple Events escape hatch --------------------------------------
 

@@ -588,6 +588,36 @@ def test_key_shift_symbol_with_modifier(monkeypatch) -> None:
     assert down[-1]["flags"] == shift
 
 
+def test_key_trailing_plus_is_preserved_as_base(monkeypatch) -> None:
+    mac = MacOS()
+    posted = []
+    monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
+    monkeypatch.setattr(mac, "_ensure_post_events", lambda: None)
+    monkeypatch.setattr(mac, "_pid", lambda app: 42)
+    monkeypatch.setattr(mac, "_frontmost_app", lambda: None)
+    monkeypatch.setattr(macos_module.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        macos_module.AS,
+        "CGEventCreateKeyboardEvent",
+        lambda source, keycode, down: {"keycode": keycode, "down": down},
+    )
+    monkeypatch.setattr(
+        macos_module.AS,
+        "CGEventSetFlags",
+        lambda event, flags: event.update(flags=flags),
+    )
+    monkeypatch.setattr(mac, "_post", lambda event, pid: posted.append(event))
+
+    mac.key("cmd++", app="Slack")
+
+    command = macos_module.AS.kCGEventFlagMaskCommand
+    shift = macos_module.AS.kCGEventFlagMaskShift
+    down = [event for event in posted if event["down"]]
+    assert [event["keycode"] for event in down] == [55, 24]
+    assert down[0]["flags"] == command
+    assert down[-1]["flags"] == command | shift
+
+
 def test_drag_posts_down_drag_up_sequence(monkeypatch) -> None:
     mac = MacOS()
     posted = []
@@ -712,6 +742,7 @@ def test_clipboard_read_write(monkeypatch) -> None:
 
         def setString_forType_(self, text, kind):
             self.text = text
+            return True
 
         def clearContents(self):
             self.text = None
@@ -729,3 +760,30 @@ def test_clipboard_read_write(monkeypatch) -> None:
     assert mac.clipboard_read() is None
     mac.clipboard_write("hello")
     assert mac.clipboard_read() == "hello"
+
+
+def test_clipboard_write_raises_when_pasteboard_rejects(monkeypatch) -> None:
+    import AppKit
+
+    mac = MacOS()
+
+    class Pasteboard:
+        def stringForType_(self, kind):
+            return None
+
+        def setString_forType_(self, text, kind):
+            return False
+
+        def clearContents(self):
+            pass
+
+    class FakeNSPasteboard:
+        @staticmethod
+        def generalPasteboard():
+            return Pasteboard()
+
+    monkeypatch.setattr(AppKit, "NSPasteboard", FakeNSPasteboard)
+    monkeypatch.setattr(AppKit, "NSPasteboardTypeString", "public.utf8-plain-text")
+
+    with pytest.raises(MacOSError, match="clipboard"):
+        mac.clipboard_write("hello")
