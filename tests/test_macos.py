@@ -535,12 +535,56 @@ def test_short_label_handles_missing_fields() -> None:
     assert _short_label({"name": "", "bundle_id": None, "path": None, "pid": 1}) == "?"
 
 
-def test_ambiguous_application_error_omits_arguments() -> None:
+class _FakeRunningApp:
+    """Minimal stand-in for NSRunningApplication.
+
+    Processes without a bundle report their whole command line as
+    localizedName, which is the case that leaked.
+    """
+
+    def __init__(self, name: str, pid: int) -> None:
+        self._name = name
+        self._pid = pid
+
+    def localizedName(self) -> str:
+        return self._name
+
+    def bundleIdentifier(self) -> None:
+        return None
+
+    def bundleURL(self) -> None:
+        return None
+
+    def processIdentifier(self) -> int:
+        return self._pid
+
+
+def test_ambiguous_application_error_omits_arguments(monkeypatch) -> None:
+    """Drive the real _resolve_app path, not a rebuilt copy of its f-string, so
+    this fails if the error ever goes back to echoing the raw name."""
     secret = "sk-do-not-leak"
-    infos = [
-        {"name": f"node server.js --token {secret}", "bundle_id": None, "path": None, "pid": 11},
-        {"name": f"node worker.js --token {secret}", "bundle_id": None, "path": None, "pid": 12},
+    apps = [
+        _FakeRunningApp(f"node server.js --token {secret}", 11),
+        _FakeRunningApp(f"node\tworker.js --token {secret}", 12),
     ]
-    rendered = ", ".join(f"{_short_label(i)} ({i['pid']})" for i in infos)
-    assert secret not in rendered
-    assert "11" in rendered and "12" in rendered
+
+    class _FakeWorkspace:
+        @staticmethod
+        def sharedWorkspace() -> _FakeWorkspace:
+            return _FakeWorkspace()
+
+        @staticmethod
+        def runningApplications() -> list[_FakeRunningApp]:
+            return apps
+
+    monkeypatch.setattr(macos_module, "NSWorkspace", _FakeWorkspace)
+
+    with pytest.raises(MacOSError) as excinfo:
+        MacOS()._resolve_app("node")
+
+    message = str(excinfo.value)
+    assert secret not in message
+    assert "--token" not in message
+    assert "server.js" not in message
+    # still usable: the pids are what disambiguate
+    assert "11" in message and "12" in message

@@ -260,10 +260,13 @@ def _short_label(info: dict[str, Any]) -> str:
     if path:
         return _truncate(PurePath(str(path)).name, 80)
     # No bundle and no path: `name` may be a whole command line, so keep only
-    # the leading token. A binary path containing spaces degrades to its first
-    # segment, which is unhelpful but never leaks an argument.
+    # the leading token. Split on any whitespace, not just a space, so a command
+    # line separated by tabs or newlines cannot slip its arguments through. A
+    # binary path containing spaces degrades to its first segment, which is
+    # unhelpful to read but never leaks an argument.
     name = str(info.get("name") or "").strip()
-    return _truncate(name.split(" ", 1)[0], 80) if name else "?"
+    parts = name.split()
+    return _truncate(parts[0], 80) if parts else "?"
 
 
 def _png_size(path: Path) -> tuple[int, int]:
