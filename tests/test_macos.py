@@ -251,6 +251,51 @@ def test_type_posts_one_physical_event_pair_per_character(monkeypatch) -> None:
     assert all(pid == 42 for _, pid in posted)
 
 
+def test_type_honors_inter_key_delay(monkeypatch) -> None:
+    mac = MacOS()
+    sleeps = []
+    monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
+    monkeypatch.setattr(mac, "_ensure_post_events", lambda: None)
+    monkeypatch.setattr(mac, "_pid", lambda app: 42)
+    monkeypatch.setattr(mac, "_post", lambda event, pid: None)
+    monkeypatch.setattr(macos_module.time, "sleep", sleeps.append)
+    monkeypatch.setattr(
+        macos_module.AS,
+        "CGEventCreateKeyboardEvent",
+        lambda source, keycode, down: {"keycode": keycode, "down": down},
+    )
+    monkeypatch.setattr(
+        macos_module.AS,
+        "CGEventKeyboardSetUnicodeString",
+        lambda event, length, text: None,
+    )
+    monkeypatch.setattr(macos_module.AS, "CGEventSetFlags", lambda event, flags: None)
+
+    mac.type("ab", app="Spotify", inter_key_delay=0.5)
+
+    assert sleeps == [0.5, 0.5]
+
+
+def test_scroll_honors_step_delay(monkeypatch) -> None:
+    mac = MacOS()
+    sleeps = []
+    monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
+    monkeypatch.setattr(mac, "_ensure_post_events", lambda: None)
+    monkeypatch.setattr(mac, "_pid", lambda app: 42)
+    monkeypatch.setattr(mac, "_post", lambda event, pid: None)
+    monkeypatch.setattr(macos_module.time, "sleep", sleeps.append)
+    monkeypatch.setattr(
+        macos_module.AS,
+        "CGEventCreateScrollWheelEvent",
+        lambda source, unit, wheels, y, x: object(),
+    )
+
+    mac.scroll(250, app="Slack", unit="pixel", step_delay=0.25)
+
+    assert sleeps == [0.25, 0.25, 0.25]
+
+
+
 def test_key_posts_real_modifier_transitions(monkeypatch) -> None:
     mac = MacOS()
     posted = []
