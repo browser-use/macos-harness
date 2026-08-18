@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Iterable
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 from PIL import Image, ImageDraw
@@ -243,6 +243,29 @@ def _truncate(value: str, limit: int = 160) -> str:
     return value if len(value) <= limit else value[: limit - 1] + "…"
 
 
+def _short_label(info: dict[str, Any]) -> str:
+    """Identify a process in a message without echoing its argv.
+
+    `localizedName` is the full command line for processes without a bundle, and
+    command lines routinely carry credentials (an MCP server started as
+    `npx mcp-remote ... --header "Authorization:Bearer ..."` is a common shape).
+    Error text ends up in logs, screenshots, and agent transcripts, so it should
+    not repeat argv. The pid already disambiguates; the label only has to be
+    recognisable.
+    """
+    bundle_id = info.get("bundle_id")
+    if bundle_id:
+        return _truncate(str(bundle_id), 80)
+    path = info.get("path")
+    if path:
+        return _truncate(PurePath(str(path)).name, 80)
+    # No bundle and no path: `name` may be a whole command line, so keep only
+    # the leading token. A binary path containing spaces degrades to its first
+    # segment, which is unhelpful but never leaks an argument.
+    name = str(info.get("name") or "").strip()
+    return _truncate(name.split(" ", 1)[0], 80) if name else "?"
+
+
 def _png_size(path: Path) -> tuple[int, int]:
     with path.open("rb") as handle:
         header = handle.read(24)
@@ -395,7 +418,7 @@ class MacOS:
             raise MacOSError(f"No running application matches {query!r}")
         if len(matches) > 1:
             names = ", ".join(
-                f"{item[1]['name']} ({item[1]['pid']})" for item in matches[:8]
+                f"{_short_label(item[1])} ({item[1]['pid']})" for item in matches[:8]
             )
             raise MacOSError(f"Application query {query!r} is ambiguous: {names}")
         return matches[0]

@@ -12,6 +12,7 @@ from macos_harness.macos import (
     MacOS,
     MacOSError,
     _png_size,
+    _short_label,
     _split_scroll_delta,
 )
 
@@ -500,3 +501,46 @@ def test_see_bounds_image_and_draws_virtual_pointer(
     assert hidden["virtual_pointer"]["visible"] is False
     with Image.open(path) as image:
         assert image.getpixel((205, 170)) == (255, 255, 255, 255)
+
+
+def test_short_label_prefers_bundle_id() -> None:
+    info = {"name": "Bear", "bundle_id": "net.shinyfrog.bear", "path": "/Applications/Bear.app", "pid": 1}
+    assert _short_label(info) == "net.shinyfrog.bear"
+
+
+def test_short_label_falls_back_to_executable_name() -> None:
+    info = {"name": "Bear", "bundle_id": None, "path": "/Applications/Bear.app", "pid": 1}
+    assert _short_label(info) == "Bear.app"
+
+
+def test_short_label_never_echoes_command_line_arguments() -> None:
+    # Processes without a bundle report their whole command line as the name,
+    # and command lines routinely carry credentials.
+    info = {
+        "name": (
+            "npm exec mcp-remote https://example.com/mcp "
+            "--header Authorization:Bearer sk-secret-value"
+        ),
+        "bundle_id": None,
+        "path": None,
+        "pid": 4242,
+    }
+    label = _short_label(info)
+    assert label == "npm"
+    assert "Bearer" not in label
+    assert "sk-secret-value" not in label
+
+
+def test_short_label_handles_missing_fields() -> None:
+    assert _short_label({"name": "", "bundle_id": None, "path": None, "pid": 1}) == "?"
+
+
+def test_ambiguous_application_error_omits_arguments() -> None:
+    secret = "sk-do-not-leak"
+    infos = [
+        {"name": f"node server.js --token {secret}", "bundle_id": None, "path": None, "pid": 11},
+        {"name": f"node worker.js --token {secret}", "bundle_id": None, "path": None, "pid": 12},
+    ]
+    rendered = ", ".join(f"{_short_label(i)} ({i['pid']})" for i in infos)
+    assert secret not in rendered
+    assert "11" in rendered and "12" in rendered
