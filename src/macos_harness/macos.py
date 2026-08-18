@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Iterable
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageDraw
@@ -239,34 +239,33 @@ def _require_macos() -> None:
 
 
 def _truncate(value: str, limit: int = 160) -> str:
-    value = value.replace("\n", "\\n")
+    # Escape every control character, not just newline: these strings come from
+    # app bundles, window titles and user queries, and a stray ESC or CR can
+    # rewrite terminal output or hide text in a log.
+    value = "".join(
+        ch if ch.isprintable() or ch == " " else f"\\x{ord(ch):02x}" for ch in value
+    )
     return value if len(value) <= limit else value[: limit - 1] + "…"
 
 
-def _short_label(info: dict[str, Any]) -> str:
-    """Identify a process in a message without echoing its argv.
+def _label(info: dict[str, Any]) -> str:
+    """Identify an application in a message without quoting process-controlled text.
 
-    `localizedName` is the full command line for processes without a bundle, and
-    command lines routinely carry credentials (an MCP server started as
-    `npx mcp-remote ... --header "Authorization:Bearer ..."` is a common shape).
-    Error text ends up in logs, screenshots, and agent transcripts, so it should
-    not repeat argv. The pid already disambiguates; the label only has to be
-    recognisable.
+    A BUNDLED app's `localizedName` is its display name, which comes from the
+    bundle rather than from the process, so it is safe to show.
+
+    A process with NO bundle reports its entire command line as `localizedName`,
+    and command lines routinely carry credentials (`npx mcp-remote ... --header
+    "Authorization:Bearer ..."` is a common shape). Nothing derived from that
+    string can be presented as safe, because even `argv[0]` is chosen by the
+    process and could itself be `Bearer:sk-live`. Those get the pid alone, which
+    is what actually disambiguates.
     """
-    bundle_id = info.get("bundle_id")
-    if bundle_id:
-        return _truncate(str(bundle_id), 80)
-    path = info.get("path")
-    if path:
-        return _truncate(PurePath(str(path)).name, 80)
-    # No bundle and no path: `name` may be a whole command line, so keep only
-    # the leading token. Split on any whitespace, not just a space, so a command
-    # line separated by tabs or newlines cannot slip its arguments through. A
-    # binary path containing spaces degrades to its first segment, which is
-    # unhelpful to read but never leaks an argument.
-    name = str(info.get("name") or "").strip()
-    parts = name.split()
-    return _truncate(parts[0], 80) if parts else "?"
+    pid = info.get("pid")
+    if info.get("bundle_id"):
+        name = str(info.get("name") or info.get("bundle_id") or "")
+        return f"{_truncate(name, 60)} ({pid})"
+    return f"pid {pid}"
 
 
 def _png_size(path: Path) -> tuple[int, int]:
@@ -395,7 +394,7 @@ class MacOS:
             and int(after["pid"]) == target_pid
         ):
             raise FocusChangedError(
-                f"{after['name']} became frontmost during {operation}; stopped"
+                f"{_label(after)} became frontmost during {operation}; stopped"
             )
 
     def _resolve_app(self, query: str | None) -> tuple[Any, dict[str, Any]]:
@@ -418,12 +417,14 @@ class MacOS:
 
         matches = exact or candidates
         if not matches:
-            raise MacOSError(f"No running application matches {query!r}")
-        if len(matches) > 1:
-            names = ", ".join(
-                f"{_short_label(item[1])} ({item[1]['pid']})" for item in matches[:8]
+            raise MacOSError(
+                f"No running application matches {_truncate(str(query), 60)!r}"
             )
-            raise MacOSError(f"Application query {query!r} is ambiguous: {names}")
+        if len(matches) > 1:
+            names = ", ".join(_label(item[1]) for item in matches[:8])
+            raise MacOSError(
+                f"Application query {_truncate(str(query), 60)!r} is ambiguous: {names}"
+            )
         return matches[0]
 
     # --- AX tree ---------------------------------------------------------
@@ -1002,7 +1003,12 @@ class MacOS:
         _, info = self._resolve_app(app)
         windows = self.windows(str(info["pid"]))
         if not windows:
-            raise MacOSError(f"No capturable windows found for {app or self._last_app}")
+            target = (
+                _truncate(str(app), 60)
+                if app
+                else (_label(self._last_app) if self._last_app else "the last app")
+            )
+            raise MacOSError(f"No capturable windows found for {target}")
         try:
             window = windows[window_index]
         except IndexError as exc:
