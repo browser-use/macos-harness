@@ -239,8 +239,33 @@ def _require_macos() -> None:
 
 
 def _truncate(value: str, limit: int = 160) -> str:
-    value = value.replace("\n", "\\n")
+    # Escape every control character, not just newline: these strings come from
+    # app bundles, window titles and user queries, and a stray ESC or CR can
+    # rewrite terminal output or hide text in a log.
+    value = "".join(
+        ch if ch.isprintable() or ch == " " else f"\\x{ord(ch):02x}" for ch in value
+    )
     return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+def _label(info: dict[str, Any]) -> str:
+    """Identify an application in a message without quoting process-controlled text.
+
+    A BUNDLED app's `localizedName` is its display name, which comes from the
+    bundle rather than from the process, so it is safe to show.
+
+    A process with NO bundle reports its entire command line as `localizedName`,
+    and command lines routinely carry credentials (`npx mcp-remote ... --header
+    "Authorization:Bearer ..."` is a common shape). Nothing derived from that
+    string can be presented as safe, because even `argv[0]` is chosen by the
+    process and could itself be `Bearer:sk-live`. Those get the pid alone, which
+    is what actually disambiguates.
+    """
+    pid = info.get("pid")
+    if info.get("bundle_id"):
+        name = str(info.get("name") or info.get("bundle_id") or "")
+        return f"{_truncate(name, 60)} ({pid})"
+    return f"pid {pid}"
 
 
 def _png_size(path: Path) -> tuple[int, int]:
@@ -369,7 +394,7 @@ class MacOS:
             and int(after["pid"]) == target_pid
         ):
             raise FocusChangedError(
-                f"{after['name']} became frontmost during {operation}; stopped"
+                f"{_label(after)} became frontmost during {operation}; stopped"
             )
 
     def _resolve_app(self, query: str | None) -> tuple[Any, dict[str, Any]]:
@@ -392,12 +417,14 @@ class MacOS:
 
         matches = exact or candidates
         if not matches:
-            raise MacOSError(f"No running application matches {query!r}")
-        if len(matches) > 1:
-            names = ", ".join(
-                f"{item[1]['name']} ({item[1]['pid']})" for item in matches[:8]
+            raise MacOSError(
+                f"No running application matches {_truncate(str(query), 60)!r}"
             )
-            raise MacOSError(f"Application query {query!r} is ambiguous: {names}")
+        if len(matches) > 1:
+            names = ", ".join(_label(item[1]) for item in matches[:8])
+            raise MacOSError(
+                f"Application query {_truncate(str(query), 60)!r} is ambiguous: {names}"
+            )
         return matches[0]
 
     # --- AX tree ---------------------------------------------------------
@@ -976,7 +1003,9 @@ class MacOS:
         _, info = self._resolve_app(app)
         windows = self.windows(str(info["pid"]))
         if not windows:
-            raise MacOSError(f"No capturable windows found for {app or self._last_app}")
+            # `info` is the resolved app, so there is no reason to echo the
+            # caller's query, which may itself be a command line.
+            raise MacOSError(f"No capturable windows found for {_label(info)}")
         try:
             window = windows[window_index]
         except IndexError as exc:

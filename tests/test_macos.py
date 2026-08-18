@@ -11,8 +11,10 @@ from macos_harness.macos import (
     FocusChangedError,
     MacOS,
     MacOSError,
+    _label,
     _png_size,
     _split_scroll_delta,
+    _truncate,
 )
 
 
@@ -500,3 +502,138 @@ def test_see_bounds_image_and_draws_virtual_pointer(
     assert hidden["virtual_pointer"]["visible"] is False
     with Image.open(path) as image:
         assert image.getpixel((205, 170)) == (255, 255, 255, 255)
+
+
+def test_label_shows_display_name_for_bundled_apps() -> None:
+    info = {"name": "Bear", "bundle_id": "net.shinyfrog.bear", "path": "/Applications/Bear.app", "pid": 7}
+    assert _label(info) == "Bear (7)"
+
+
+def test_label_gives_pid_only_for_unbundled_processes() -> None:
+    # localizedName is the whole command line here, and even argv[0] is chosen
+    # by the process, so nothing derived from it is safe to print.
+    info = {
+        "name": "npx mcp-remote https://x/mcp --header Authorization:Bearer sk-live",
+        "bundle_id": None,
+        "path": None,
+        "pid": 4242,
+    }
+    assert _label(info) == "pid 4242"
+
+
+def test_label_does_not_trust_argv_zero() -> None:
+    # a process can name itself anything, including a credential
+    info = {"name": "Bearer:sk-live-abcdef", "bundle_id": None, "path": None, "pid": 9}
+    label = _label(info)
+    assert label == "pid 9"
+    assert "sk-live" not in label
+
+
+def test_truncate_escapes_control_characters() -> None:
+    # ESC and CR in a bundle name or query can rewrite terminal output, so the
+    # raw byte must be gone and replaced by a visible escape.
+    escaped = _truncate("evil\x1b[2Kname")
+    assert "\x1b" not in escaped
+    assert "\\x1b" in escaped
+    assert "\r" not in _truncate("a\rb")
+    assert _truncate("plain name") == "plain name"
+
+
+class _FakeRunningApp:
+    """Minimal stand-in for NSRunningApplication."""
+
+    def __init__(self, name: str, pid: int, bundle_id: str | None = None) -> None:
+        self._name = name
+        self._pid = pid
+        self._bundle_id = bundle_id
+
+    def localizedName(self) -> str:
+        return self._name
+
+    def bundleIdentifier(self) -> str | None:
+        return self._bundle_id
+
+    def bundleURL(self) -> None:
+        return None
+
+    def processIdentifier(self) -> int:
+        return self._pid
+
+
+def _patch_running_apps(monkeypatch, apps: list[_FakeRunningApp]) -> None:
+    class _FakeWorkspace:
+        @staticmethod
+        def sharedWorkspace() -> _FakeWorkspace:
+            return _FakeWorkspace()
+
+        @staticmethod
+        def runningApplications() -> list[_FakeRunningApp]:
+            return apps
+
+    monkeypatch.setattr(macos_module, "NSWorkspace", _FakeWorkspace)
+
+
+def test_ambiguity_error_omits_command_lines(monkeypatch) -> None:
+    """Drive the real _resolve_app path, not a rebuilt copy of its f-string."""
+    secret = "sk-do-not-leak"
+    _patch_running_apps(monkeypatch, [
+        _FakeRunningApp(f"node server.js --token {secret}", 11),
+        _FakeRunningApp(f"node\tworker.js --token {secret}", 12),
+    ])
+
+    with pytest.raises(MacOSError) as excinfo:
+        MacOS()._resolve_app("node")
+
+    message = str(excinfo.value)
+    assert secret not in message
+    assert "--token" not in message
+    assert "server.js" not in message
+    assert "11" in message and "12" in message
+
+
+def test_ambiguity_error_bounds_the_query_itself(monkeypatch) -> None:
+    """The query is echoed back, and a caller can pass a name taken from
+    list_apps, which for an unbundled process is a whole command line."""
+    secret = "sk-query-leak"
+    query = f"node --header Authorization:Bearer {secret} and more padding here to exceed the limit"
+    _patch_running_apps(monkeypatch, [
+        _FakeRunningApp(query, 21),
+        _FakeRunningApp(query, 22),
+    ])
+
+    with pytest.raises(MacOSError) as excinfo:
+        MacOS()._resolve_app(query)
+
+    assert len(str(excinfo.value)) < 200
+    assert "padding here to exceed" not in str(excinfo.value)
+
+
+def test_focus_guard_error_omits_command_lines() -> None:
+    info = {"name": "node app.js --token sk-focus-leak", "bundle_id": None, "path": None, "pid": 33}
+    assert "sk-focus-leak" not in macos_module._label(info)
+    assert macos_module._label(info) == "pid 33"
+
+
+def test_capture_screenshot_error_omits_command_lines(monkeypatch) -> None:
+    secret = "sk-also-do-not-leak"
+    info = {
+        "name": f"node server.js --header Authorization:Bearer {secret}",
+        "bundle_id": None,
+        "path": None,
+        "pid": 4242,
+    }
+    mac = MacOS()
+    monkeypatch.setattr(mac, "_ensure_screen_recording", lambda: None)
+    monkeypatch.setattr(mac, "_resolve_app", lambda app: (object(), info))
+    monkeypatch.setattr(mac, "windows", lambda target: [])
+    mac._last_app = info
+
+    # pass the command line AS the query: a caller can take a name straight
+    # from list_apps and hand it back, so the query is not trustworthy either
+    with pytest.raises(MacOSError) as excinfo:
+        mac.capture_screenshot(info["name"])
+
+    message = str(excinfo.value)
+    assert secret not in message
+    assert "Authorization" not in message
+    assert "4242" in message
