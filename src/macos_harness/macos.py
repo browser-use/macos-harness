@@ -1061,11 +1061,12 @@ class MacOS:
         bounds = screenshot["bounds"]
         scale_x = image.width / float(bounds["width"])
         scale_y = image.height / float(bounds["height"])
+        screenshot["scale_x"] = scale_x
+        screenshot["scale_y"] = scale_y
         pointer = self._pointer_position
         pointer_info: dict[str, Any] | None = None
         if pointer is not None:
-            image_x = (pointer[0] - float(bounds["x"])) * scale_x
-            image_y = (pointer[1] - float(bounds["y"])) * scale_y
+            image_x, image_y = self._screen_to_image(pointer[0], pointer[1], screenshot)
             inside = 0 <= image_x < image.width and 0 <= image_y < image.height
             pointer_info = {
                 "screen": {"x": pointer[0], "y": pointer[1]},
@@ -1153,13 +1154,36 @@ class MacOS:
         shot = self._last_screenshot
         bounds = shot["bounds"]
         if coordinate_space == "screenshot":
-            x = float(x) / float(shot["scale_x"])
-            y = float(y) / float(shot["scale_y"])
+            scale_x, scale_y = self._valid_scale(shot)
+            x = float(x) / scale_x
+            y = float(y) / scale_y
         elif coordinate_space != "window":
             raise MacOSError(
                 "coordinate_space must be 'screenshot', 'window', or 'screen'"
             )
         return bounds["x"] + float(x), bounds["y"] + float(y)
+
+    @staticmethod
+    def _valid_scale(shot: dict[str, Any]) -> tuple[float, float]:
+        """Return the screenshot's pixel-to-point scale, rejecting degenerate values."""
+        scale_x = float(shot["scale_x"])
+        scale_y = float(shot["scale_y"])
+        if scale_x <= 0 or scale_y <= 0:
+            raise MacOSError(
+                "Screenshot has a non-positive scale; recapture the window first"
+            )
+        return scale_x, scale_y
+
+    @staticmethod
+    def _screen_to_image(
+        x: float, y: float, shot: dict[str, Any]
+    ) -> tuple[float, float]:
+        """Map a global screen point to image pixels for a given screenshot."""
+        scale_x, scale_y = MacOS._valid_scale(shot)
+        bounds = shot["bounds"]
+        image_x = (float(x) - float(bounds["x"])) * scale_x
+        image_y = (float(y) - float(bounds["y"])) * scale_y
+        return image_x, image_y
 
     def _pointer_info(self) -> dict[str, Any] | None:
         if self._pointer_position is None:
@@ -1168,9 +1192,7 @@ class MacOS:
         result: dict[str, Any] = {"screen": {"x": screen_x, "y": screen_y}}
         shot = self._last_screenshot
         if shot is not None:
-            bounds = shot["bounds"]
-            image_x = (screen_x - float(bounds["x"])) * float(shot["scale_x"])
-            image_y = (screen_y - float(bounds["y"])) * float(shot["scale_y"])
+            image_x, image_y = self._screen_to_image(screen_x, screen_y, shot)
             result["image"] = {"x": image_x, "y": image_y}
             result["inside"] = 0 <= image_x < float(
                 shot["width"]

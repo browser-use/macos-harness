@@ -382,6 +382,47 @@ def test_screen_point_converts_retina_pixels() -> None:
     assert mac._screen_point(400, 200, "screen") == (400.0, 200.0)
 
 
+def test_screen_to_image_round_trip_on_secondary_display() -> None:
+    mac = MacOS()
+    shot = {
+        "bounds": {"x": -1920.0, "y": 0.0, "width": 800.0, "height": 600.0},
+        "scale_x": 2.0,
+        "scale_y": 2.0,
+        "width": 1600,
+        "height": 1200,
+    }
+    mac._last_screenshot = shot
+
+    image_x, image_y = 800.0, 300.0
+    screen_x, screen_y = mac._screen_point(image_x, image_y, "screenshot")
+    assert (screen_x, screen_y) == (-1520.0, 150.0)
+
+    back_x, back_y = mac._screen_to_image(screen_x, screen_y, shot)
+    assert (back_x, back_y) == (image_x, image_y)
+
+
+def test_screen_point_rejects_nonpositive_scale() -> None:
+    mac = MacOS()
+    mac._last_screenshot = {
+        "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0},
+        "scale_x": 0.0,
+        "scale_y": 2.0,
+    }
+    with pytest.raises(MacOSError, match="non-positive scale"):
+        mac._screen_point(100, 100, "screenshot")
+
+
+def test_screen_to_image_rejects_zero_scale() -> None:
+    mac = MacOS()
+    shot = {
+        "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0},
+        "scale_x": 0.0,
+        "scale_y": 2.0,
+    }
+    with pytest.raises(MacOSError, match="non-positive scale"):
+        mac._screen_to_image(100, 100, shot)
+
+
 def test_move_is_logical_only(monkeypatch) -> None:
     mac = MacOS()
     overlay_moves = []
