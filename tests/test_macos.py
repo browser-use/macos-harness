@@ -628,8 +628,10 @@ def test_capture_screenshot_error_omits_command_lines(monkeypatch) -> None:
     monkeypatch.setattr(mac, "windows", lambda target: [])
     mac._last_app = info
 
+    # pass the command line AS the query: a caller can take a name straight
+    # from list_apps and hand it back, so the query is not trustworthy either
     with pytest.raises(MacOSError) as excinfo:
-        mac.capture_screenshot()
+        mac.capture_screenshot(info["name"])
 
     message = str(excinfo.value)
     assert secret not in message

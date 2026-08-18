@@ -1003,12 +1003,9 @@ class MacOS:
         _, info = self._resolve_app(app)
         windows = self.windows(str(info["pid"]))
         if not windows:
-            target = (
-                _truncate(str(app), 60)
-                if app
-                else (_label(self._last_app) if self._last_app else "the last app")
-            )
-            raise MacOSError(f"No capturable windows found for {target}")
+            # `info` is the resolved app, so there is no reason to echo the
+            # caller's query, which may itself be a command line.
+            raise MacOSError(f"No capturable windows found for {_label(info)}")
         try:
             window = windows[window_index]
         except IndexError as exc:
