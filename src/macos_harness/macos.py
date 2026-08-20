@@ -13,6 +13,7 @@ import struct
 import subprocess
 import tempfile
 import time
+import warnings
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -1140,6 +1141,21 @@ class MacOS:
             raise MacOSError("Input requires an app or prior app snapshot")
         AS.CGEventPostToPid(pid, event)
 
+    @staticmethod
+    def _post_global(event: Any) -> None:
+        """Post through the HID tap.
+
+        AppKit hit-tests mouse events against the window server's pointer
+        state, which ``CGEventPostToPid`` bypasses, so PID-targeted mouse
+        events are silently discarded. Keyboard events carry no position and
+        are unaffected. See ``click(pointer_move=...)``.
+        """
+        AS.CGEventPost(AS.kCGHIDEventTap, event)
+
+    @staticmethod
+    def _cursor_position() -> Any:
+        return AS.CGEventGetLocation(AS.CGEventCreate(None))
+
     def _screen_point(
         self, x: float, y: float, coordinate_space: str
     ) -> tuple[float, float]:
@@ -1212,8 +1228,22 @@ class MacOS:
         button: str = "left",
         clicks: int = 1,
         coordinate_space: str = "screenshot",
+        pointer_move: bool = False,
     ) -> dict[str, Any]:
-        """Send one raw coordinate click to an app PID; never guess an AX action."""
+        """Send one raw coordinate click; never guess an AX action.
+
+        ``pointer_move=False`` (the default) preserves the harness invariants:
+        the event is addressed to the app's PID and the physical cursor never
+        moves. On macOS 26 this transport is silently discarded by AppKit apps,
+        so the call warns rather than appearing to succeed.
+
+        ``pointer_move=True`` warps the physical cursor to ``point``, posts
+        through the HID tap, and warps it back. This delivers the click, at the
+        cost of a brief visible cursor jump and delivery to whatever sits at
+        that point rather than strictly to ``app``.
+
+        Prefer ``mac.ax.perform(index, "AXPress")`` where the element exposes it.
+        """
         self._ensure_accessibility()
         self._ensure_post_events()
         button = button.casefold()
@@ -1227,22 +1257,49 @@ class MacOS:
         self._pointer_position = point
         self._overlay.move(*point)
         down_type, up_type, _ = _MOUSE_EVENTS[button]
-        for click_count in range(1, max(1, int(clicks)) + 1):
-            down = AS.CGEventCreateMouseEvent(
-                self._event_source, down_type, point, _BUTTONS[button]
+
+        if not pointer_move:
+            warnings.warn(
+                "mac.click() posts to the app PID, which AppKit discards for "
+                "mouse events; this click will probably have no effect. Use "
+                "mac.ax.perform(index, 'AXPress'), or pass pointer_move=True "
+                "to route through the HID tap (moves the cursor briefly).",
+                RuntimeWarning,
+                stacklevel=2,
             )
-            up = AS.CGEventCreateMouseEvent(
-                self._event_source, up_type, point, _BUTTONS[button]
-            )
-            AS.CGEventSetIntegerValueField(
-                down, AS.kCGMouseEventClickState, click_count
-            )
-            AS.CGEventSetIntegerValueField(up, AS.kCGMouseEventClickState, click_count)
-            self._post(down, pid)
-            time.sleep(0.03)
-            self._post(up, pid)
-            time.sleep(0.03)
-            self._guard_focus(focus_before, pid, "click")
+
+        origin = self._cursor_position() if pointer_move else None
+        try:
+            if pointer_move:
+                AS.CGWarpMouseCursorPosition(point)
+                time.sleep(0.02)
+            for click_count in range(1, max(1, int(clicks)) + 1):
+                down = AS.CGEventCreateMouseEvent(
+                    self._event_source, down_type, point, _BUTTONS[button]
+                )
+                up = AS.CGEventCreateMouseEvent(
+                    self._event_source, up_type, point, _BUTTONS[button]
+                )
+                AS.CGEventSetIntegerValueField(
+                    down, AS.kCGMouseEventClickState, click_count
+                )
+                AS.CGEventSetIntegerValueField(
+                    up, AS.kCGMouseEventClickState, click_count
+                )
+                if pointer_move:
+                    self._post_global(down)
+                    time.sleep(0.03)
+                    self._post_global(up)
+                else:
+                    self._post(down, pid)
+                    time.sleep(0.03)
+                    self._post(up, pid)
+                time.sleep(0.03)
+                self._guard_focus(focus_before, pid, "click")
+        finally:
+            if origin is not None:
+                AS.CGWarpMouseCursorPosition(origin)
+
         self._overlay.click()
         pointer = self._pointer_info()
         assert pointer is not None

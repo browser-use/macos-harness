@@ -500,3 +500,37 @@ def test_see_bounds_image_and_draws_virtual_pointer(
     assert hidden["virtual_pointer"]["visible"] is False
     with Image.open(path) as image:
         assert image.getpixel((205, 170)) == (255, 255, 255, 255)
+
+
+def test_default_click_warns_that_pid_transport_is_discarded(monkeypatch) -> None:
+    mac = MacOS()
+    monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
+    monkeypatch.setattr(mac, "_ensure_post_events", lambda: None)
+    monkeypatch.setattr(mac, "_pid", lambda app: 42)
+    monkeypatch.setattr(mac, "_post", lambda event, pid: None)
+
+    with pytest.warns(RuntimeWarning, match="AppKit discards"):
+        mac.click(10, 20, app="Slack", coordinate_space="screen")
+
+
+def test_pointer_move_click_uses_hid_tap_and_restores_cursor(monkeypatch) -> None:
+    mac = MacOS()
+    warps: list[object] = []
+    globals_posted: list[object] = []
+    origin = object()
+
+    monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
+    monkeypatch.setattr(mac, "_ensure_post_events", lambda: None)
+    monkeypatch.setattr(mac, "_pid", lambda app: 42)
+    monkeypatch.setattr(mac, "_cursor_position", staticmethod(lambda: origin))
+    monkeypatch.setattr(
+        mac, "_post", lambda event, pid: pytest.fail("pointer_move must not use PID")
+    )
+    monkeypatch.setattr(MacOS, "_post_global", staticmethod(globals_posted.append))
+    monkeypatch.setattr(macos_module.AS, "CGWarpMouseCursorPosition", warps.append)
+
+    mac.click(10, 20, app="Slack", coordinate_space="screen", pointer_move=True)
+
+    assert len(globals_posted) == 2
+    assert warps[0] == (10.0, 20.0)
+    assert warps[-1] is origin
