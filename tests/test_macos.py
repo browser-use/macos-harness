@@ -558,17 +558,41 @@ def test_pointer_move_refuses_to_click_an_occluded_target(monkeypatch) -> None:
         mac.click(10, 20, app="Slack", coordinate_space="screen", pointer_move=True)
 
 
-def test_pointer_move_proceeds_when_owner_is_unknown(monkeypatch) -> None:
+def test_pointer_move_fails_closed_when_owner_is_unknown(monkeypatch) -> None:
     mac = MacOS()
-    posted: list[object] = []
     monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
     monkeypatch.setattr(mac, "_ensure_post_events", lambda: None)
     monkeypatch.setattr(mac, "_pid", lambda app: 42)
     monkeypatch.setattr(mac, "_owner_pid_at", staticmethod(lambda point: None))
-    monkeypatch.setattr(mac, "_cursor_position", staticmethod(lambda: object()))
-    monkeypatch.setattr(MacOS, "_post_global", staticmethod(posted.append))
-    monkeypatch.setattr(macos_module.AS, "CGWarpMouseCursorPosition", lambda p: None)
+    monkeypatch.setattr(
+        MacOS,
+        "_post_global",
+        staticmethod(lambda event: pytest.fail("must not click an unresolved point")),
+    )
 
-    mac.click(10, 20, app="Slack", coordinate_space="screen", pointer_move=True)
+    with pytest.raises(MacOSError, match="Cannot resolve which application owns"):
+        mac.click(10, 20, app="Slack", coordinate_space="screen", pointer_move=True)
 
-    assert len(posted) == 2
+
+def test_pointer_move_rechecks_ownership_after_warping(monkeypatch) -> None:
+    """A window that covers the point between preflight and post must abort."""
+    mac = MacOS()
+    owners = iter([42, 99])
+    warps: list[object] = []
+    origin = object()
+    monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
+    monkeypatch.setattr(mac, "_ensure_post_events", lambda: None)
+    monkeypatch.setattr(mac, "_pid", lambda app: 42)
+    monkeypatch.setattr(mac, "_owner_pid_at", staticmethod(lambda point: next(owners)))
+    monkeypatch.setattr(mac, "_cursor_position", staticmethod(lambda: origin))
+    monkeypatch.setattr(
+        MacOS,
+        "_post_global",
+        staticmethod(lambda event: pytest.fail("must not click after ownership moved")),
+    )
+    monkeypatch.setattr(macos_module.AS, "CGWarpMouseCursorPosition", warps.append)
+
+    with pytest.raises(MacOSError, match="would click pid 99, not 42"):
+        mac.click(10, 20, app="Slack", coordinate_space="screen", pointer_move=True)
+
+    assert warps[-1] is origin, "cursor must still be restored when the recheck aborts"

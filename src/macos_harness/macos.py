@@ -1158,12 +1158,18 @@ class MacOS:
 
     @staticmethod
     def _owner_pid_at(point: tuple[float, float]) -> int | None:
-        """Return the pid owning the topmost element at ``point``, if any.
+        """Return the pid owning the topmost element at ``point``.
 
         The HID tap delivers to whatever is visually frontmost at a screen
         point, so this is what actually receives a ``pointer_move`` click.
         ``windows()`` cannot answer this: its ``on_screen`` flag means "not
         minimised", not "unoccluded".
+
+        ``None`` means ownership could not be resolved, which in practice only
+        happens for coordinates that are not on any display — every on-screen
+        point resolves, including bare desktop (Finder) and windows whose
+        internals expose no accessibility tree. Callers must treat ``None`` as
+        "unsafe to click", never as "unoccupied".
         """
         error, element = AS.AXUIElementCopyElementAtPosition(
             AS.AXUIElementCreateSystemWide(), point[0], point[1], None
@@ -1172,6 +1178,26 @@ class MacOS:
             return None
         error, pid = AS.AXUIElementGetPid(element, None)
         return None if error != 0 else int(pid)
+
+    def _require_target_at(
+        self, point: tuple[float, float], pid: int, app: str | None
+    ) -> None:
+        """Fail closed unless ``pid`` owns whatever is topmost at ``point``."""
+        owner = self._owner_pid_at(point)
+        if owner is None:
+            raise MacOSError(
+                f"Cannot resolve which application owns {point}, so a "
+                "pointer_move click there is unsafe. Points off every display "
+                "do not resolve; check the coordinate and its space."
+            )
+        if owner != pid:
+            raise MacOSError(
+                f"pointer_move=True would click pid {owner}, not {pid}: "
+                f"another window is above {app or pid!r} at {point}. The HID "
+                "tap delivers to whatever is visually frontmost at the point, "
+                "so raise or move the target window first, or use "
+                "mac.ax.perform(index, 'AXPress'), which ignores occlusion."
+            )
 
     def _screen_point(
         self, x: float, y: float, coordinate_space: str
@@ -1286,15 +1312,7 @@ class MacOS:
                 stacklevel=2,
             )
         else:
-            owner = self._owner_pid_at(point)
-            if owner is not None and owner != pid:
-                raise MacOSError(
-                    f"pointer_move=True would click pid {owner}, not {pid}: "
-                    f"another window is above {app or pid!r} at {point}. The HID "
-                    "tap delivers to whatever is visually frontmost at the point, "
-                    "so raise or move the target window first, or use "
-                    "mac.ax.perform(index, 'AXPress'), which ignores occlusion."
-                )
+            self._require_target_at(point, pid, app)
 
         focus_before = self._frontmost_app()
         self._pointer_position = point
@@ -1305,6 +1323,12 @@ class MacOS:
             if pointer_move:
                 AS.CGWarpMouseCursorPosition(point)
                 time.sleep(0.02)
+                # Re-check after the warp, immediately before posting: the
+                # preflight is a moment stale by now, and the warp itself can
+                # surface a tooltip or popover under the cursor. Not repeated
+                # per iteration — for clicks>1 the first click is expected to
+                # change what sits at the point.
+                self._require_target_at(point, pid, app)
             for click_count in range(1, max(1, int(clicks)) + 1):
                 down = AS.CGEventCreateMouseEvent(
                     self._event_source, down_type, point, _BUTTONS[button]
