@@ -13,6 +13,7 @@ import struct
 import subprocess
 import tempfile
 import time
+import warnings
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -1140,6 +1141,64 @@ class MacOS:
             raise MacOSError("Input requires an app or prior app snapshot")
         AS.CGEventPostToPid(pid, event)
 
+    @staticmethod
+    def _post_global(event: Any) -> None:
+        """Post through the HID tap.
+
+        AppKit hit-tests mouse events against the window server's pointer
+        state, which ``CGEventPostToPid`` bypasses, so PID-targeted mouse
+        events are silently discarded. Keyboard events carry no position and
+        are unaffected. See ``click(pointer_move=...)``.
+        """
+        AS.CGEventPost(AS.kCGHIDEventTap, event)
+
+    @staticmethod
+    def _cursor_position() -> Any:
+        return AS.CGEventGetLocation(AS.CGEventCreate(None))
+
+    @staticmethod
+    def _owner_pid_at(point: tuple[float, float]) -> int | None:
+        """Return the pid owning the topmost element at ``point``.
+
+        The HID tap delivers to whatever is visually frontmost at a screen
+        point, so this is what actually receives a ``pointer_move`` click.
+        ``windows()`` cannot answer this: its ``on_screen`` flag means "not
+        minimised", not "unoccluded".
+
+        ``None`` means ownership could not be resolved, which in practice only
+        happens for coordinates that are not on any display — every on-screen
+        point resolves, including bare desktop (Finder) and windows whose
+        internals expose no accessibility tree. Callers must treat ``None`` as
+        "unsafe to click", never as "unoccupied".
+        """
+        error, element = AS.AXUIElementCopyElementAtPosition(
+            AS.AXUIElementCreateSystemWide(), point[0], point[1], None
+        )
+        if error != 0 or element is None:
+            return None
+        error, pid = AS.AXUIElementGetPid(element, None)
+        return None if error != 0 else int(pid)
+
+    def _require_target_at(
+        self, point: tuple[float, float], pid: int, app: str | None
+    ) -> None:
+        """Fail closed unless ``pid`` owns whatever is topmost at ``point``."""
+        owner = self._owner_pid_at(point)
+        if owner is None:
+            raise MacOSError(
+                f"Cannot resolve which application owns {point}, so a "
+                "pointer_move click there is unsafe. Points off every display "
+                "do not resolve; check the coordinate and its space."
+            )
+        if owner != pid:
+            raise MacOSError(
+                f"pointer_move=True would click pid {owner}, not {pid}: "
+                f"another window is above {app or pid!r} at {point}. The HID "
+                "tap delivers to whatever is visually frontmost at the point, "
+                "so raise or move the target window first, or use "
+                "mac.ax.perform(index, 'AXPress'), which ignores occlusion."
+            )
+
     def _screen_point(
         self, x: float, y: float, coordinate_space: str
     ) -> tuple[float, float]:
@@ -1212,8 +1271,26 @@ class MacOS:
         button: str = "left",
         clicks: int = 1,
         coordinate_space: str = "screenshot",
+        pointer_move: bool = False,
     ) -> dict[str, Any]:
-        """Send one raw coordinate click to an app PID; never guess an AX action."""
+        """Send one raw coordinate click; never guess an AX action.
+
+        ``pointer_move=False`` (the default) preserves the harness invariants:
+        the event is addressed to the app's PID and the physical cursor never
+        moves. On macOS 26 this transport is silently discarded by AppKit apps,
+        so the call warns rather than appearing to succeed.
+
+        ``pointer_move=True`` warps the physical cursor to ``point``, posts
+        through the HID tap, and warps it back. This delivers the click, at the
+        cost of a brief visible cursor jump. Because the HID tap goes to
+        whatever is visually frontmost at ``point``, an occluded target would
+        receive nothing while another app was clicked instead; that case raises
+        ``MacOSError`` rather than clicking the wrong application. ``_guard_focus``
+        is not applied on this path, since clicking an app normally raises it.
+
+        Prefer ``mac.ax.perform(index, "AXPress")`` where the element exposes it:
+        it ignores occlusion and z-order entirely.
+        """
         self._ensure_accessibility()
         self._ensure_post_events()
         button = button.casefold()
@@ -1223,26 +1300,67 @@ class MacOS:
         pid = self._pid(app)
         if pid is None:
             raise MacOSError("Pointer input requires an app or prior app snapshot")
+        if not pointer_move:
+            warnings.warn(
+                "mac.click() posts to the app PID. AppKit discards mouse events "
+                "delivered that way (macOS 26; see issue #6), so this click may "
+                "have no effect and will not report failure. Use "
+                "mac.ax.perform(index, 'AXPress'), or pass pointer_move=True to "
+                "route through the HID tap (moves the cursor briefly). Silence "
+                "with warnings.filterwarnings('ignore', category=RuntimeWarning).",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        else:
+            self._require_target_at(point, pid, app)
+
         focus_before = self._frontmost_app()
         self._pointer_position = point
         self._overlay.move(*point)
         down_type, up_type, _ = _MOUSE_EVENTS[button]
-        for click_count in range(1, max(1, int(clicks)) + 1):
-            down = AS.CGEventCreateMouseEvent(
-                self._event_source, down_type, point, _BUTTONS[button]
-            )
-            up = AS.CGEventCreateMouseEvent(
-                self._event_source, up_type, point, _BUTTONS[button]
-            )
-            AS.CGEventSetIntegerValueField(
-                down, AS.kCGMouseEventClickState, click_count
-            )
-            AS.CGEventSetIntegerValueField(up, AS.kCGMouseEventClickState, click_count)
-            self._post(down, pid)
-            time.sleep(0.03)
-            self._post(up, pid)
-            time.sleep(0.03)
-            self._guard_focus(focus_before, pid, "click")
+        origin = self._cursor_position() if pointer_move else None
+        try:
+            if pointer_move:
+                AS.CGWarpMouseCursorPosition(point)
+                time.sleep(0.02)
+                # Re-check after the warp, immediately before posting: the
+                # preflight is a moment stale by now, and the warp itself can
+                # surface a tooltip or popover under the cursor. Not repeated
+                # per iteration — for clicks>1 the first click is expected to
+                # change what sits at the point.
+                self._require_target_at(point, pid, app)
+            for click_count in range(1, max(1, int(clicks)) + 1):
+                down = AS.CGEventCreateMouseEvent(
+                    self._event_source, down_type, point, _BUTTONS[button]
+                )
+                up = AS.CGEventCreateMouseEvent(
+                    self._event_source, up_type, point, _BUTTONS[button]
+                )
+                AS.CGEventSetIntegerValueField(
+                    down, AS.kCGMouseEventClickState, click_count
+                )
+                AS.CGEventSetIntegerValueField(
+                    up, AS.kCGMouseEventClickState, click_count
+                )
+                if pointer_move:
+                    self._post_global(down)
+                    time.sleep(0.03)
+                    self._post_global(up)
+                else:
+                    self._post(down, pid)
+                    time.sleep(0.03)
+                    self._post(up, pid)
+                time.sleep(0.03)
+                if not pointer_move:
+                    # A pointer_move click is delivered where the user can see
+                    # it, and clicking an app normally raises it, so the target
+                    # becoming frontmost is the expected outcome rather than the
+                    # focus theft _guard_focus exists to catch.
+                    self._guard_focus(focus_before, pid, "click")
+        finally:
+            if origin is not None:
+                AS.CGWarpMouseCursorPosition(origin)
+
         self._overlay.click()
         pointer = self._pointer_info()
         assert pointer is not None
