@@ -54,6 +54,55 @@ Think in `see`, `key`, `type`, `click`, `ax`, and `script`. `browser`, `Path`, a
 There are no Spotify tools, Slack tools, or Final Cut tools. The model gets raw
 primitives and writes the rest.
 
+## Background AutoFill and system popovers
+
+`mac.ax` can search and act on running processes without requesting activation.
+Use one call when the owning process is unknown:
+
+```python
+mac.ax.press("Not Now", role="button", all_apps=True)
+```
+
+`query`, `query_all`, `wait`, `wait_gone`, and `press` accept `text` as the
+first positional argument. Use `role=` instead of a raw `search_key` for common
+targets: `any`, `button`, `checkbox`, `combo box`, `image`, `link`, `list`,
+`menu`, `menu item`, `radio button`, `static text`, `table`, `text area`, and
+`text field`. An unknown role raises `MacOSError`. Do not pass both `role` and
+`search_key`.
+
+Use `apps=` to limit a cross-process search. Pass one app selector or an
+iterable of selectors. Each selector can be an app name, bundle ID, path, or
+PID. Duplicate PIDs are removed.
+
+```python
+mac.ax.wait("Not Now", role="button", apps="Spotify")
+mac.ax.wait_gone("Not Now", role="button", apps=["Spotify"])
+```
+
+`query_all` searches every running app, or only the apps named in `apps`. It
+uses one positive global `limit`, applies a timeout to each process, and adds
+owner metadata (`name`, `bundle_id`, `pid`, `path`) to every match. A broad
+search skips inaccessible processes. A scoped `apps` search reports a target
+failure. Element handles remain valid until the next AX snapshot or search.
+
+Cross-process calls require non-empty search text. Default result attributes
+exclude `AXValue`. Reading a value remains a separate, explicit `ax.get` call
+or custom `attributes` choice.
+
+`wait` polls one `app`, every app with `all_apps=True`, or the target set in
+`apps`. Pass exactly one scope. Zero matches keep polling until `timeout`.
+Multiple matches fail closed with owner, role, and title details.
+
+`wait_gone` requires two consecutive empty polls. A named app that exits counts
+as gone. `press` waits for one match, requires `AXPress`, performs it, and
+returns the match. The harness never calls an activate or raise API. If the
+target makes itself frontmost, `press` detects that change and raises
+`FocusChangedError`. It cannot undo a focus change initiated by the target.
+
+These calls act only on accessible UI that macOS already rendered. They cannot
+make secure UI appear in an inactive app. They cannot bypass Touch ID, passkeys,
+CAPTCHA, account recovery, or another check that requires the user.
+
 ## How it works
 
 ```text

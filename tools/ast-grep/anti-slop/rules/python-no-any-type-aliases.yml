@@ -1,0 +1,19 @@
+id: anti-slop-python-no-any-type-aliases
+language: python
+severity: error
+message: Type alias is bound to Any, so every user of the alias silently loses type checking.
+note: Define the alias as a concrete type, Protocol, TypedDict, or union instead of Any.
+rule:
+  any:
+    - all:
+        - kind: assignment
+        - has: { field: type, regex: '^TypeAlias$' }
+        - has: { field: right, regex: '^(typing\.)?Any$' }
+    - all:
+        - kind: assignment
+        - not: { has: { field: type, kind: type } }
+        - has: { field: left, kind: identifier, regex: '^[A-Z]' }
+        - has: { field: right, regex: '^(typing\.)?Any$' }
+    - all:
+        - kind: type_alias_statement
+        - has: { field: right, regex: '^(typing\.)?Any$' }

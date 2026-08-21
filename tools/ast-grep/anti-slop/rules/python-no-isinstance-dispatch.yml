@@ -1,0 +1,13 @@
+id: anti-slop-python-no-isinstance-dispatch
+language: python
+severity: error
+message: An elif branch dispatches on isinstance(), doing by hand what a typed contract (Protocol, singledispatch, or match on a sealed union) should do.
+note: Replace the isinstance chain with functools.singledispatch, a Protocol method, or structural pattern matching over a closed type.
+rule:
+  kind: elif_clause
+  has:
+    field: condition
+    any:
+      - kind: call
+        has: { field: function, regex: '^isinstance$' }
+      - has: { kind: call, stopBy: end, has: { field: function, regex: '^isinstance$' } }

@@ -8,6 +8,7 @@ from PIL import Image
 import macos_harness.macos as macos_module
 from macos_harness.macos import (
     _KEYCODES,
+    ApplicationNotFoundError,
     FocusChangedError,
     MacOS,
     MacOSError,
@@ -64,7 +65,17 @@ def test_agent_surface_is_flat_and_explicit() -> None:
 
     for verb in ("see", "key", "type", "click", "script"):
         assert callable(getattr(mac, verb))
-    for verb in ("at", "query", "get", "set", "perform"):
+    for verb in (
+        "at",
+        "query",
+        "query_all",
+        "wait",
+        "wait_gone",
+        "press",
+        "get",
+        "set",
+        "perform",
+    ):
         assert callable(getattr(mac.ax, verb))
     assert not hasattr(mac, "mouse")
     assert not hasattr(mac, "keyboard")
@@ -110,10 +121,21 @@ def test_application_element_enables_enhanced_ax(monkeypatch) -> None:
         "AXUIElementSetAttributeValue",
         lambda element, attribute, value: writes.append((element, attribute, value)),
     )
+    timeouts = []
+    monkeypatch.setattr(
+        macos_module.AS,
+        "AXUIElementSetMessagingTimeout",
+        lambda element, timeout: timeouts.append((element, timeout)) or 0,
+    )
     monkeypatch.setattr(macos_module.time, "sleep", lambda seconds: None)
 
-    assert MacOS._application_element(42) is root
+    assert MacOS._application_element(42, messaging_timeout=0.5) is root
+    assert timeouts == [(root, 0.5)]
     assert writes == [(root, "AXEnhancedUserInterface", True)]
+
+    writes.clear()
+    assert MacOS._application_element(42, enhance=False) is root
+    assert writes == []
 
 
 def test_ax_query_falls_back_to_a_bounded_tree(monkeypatch) -> None:
@@ -128,7 +150,7 @@ def test_ax_query_falls_back_to_a_bounded_tree(monkeypatch) -> None:
     }
     monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
     monkeypatch.setattr(mac, "_pid", lambda app: 42)
-    monkeypatch.setattr(mac, "_application_element", lambda pid: root)
+    monkeypatch.setattr(mac, "_application_element", lambda pid, **kwargs: root)
     monkeypatch.setattr(mac, "_is_ax_element", lambda value: value in data)
     monkeypatch.setattr(
         mac,
@@ -174,6 +196,318 @@ def test_ax_query_falls_back_to_a_bounded_tree(monkeypatch) -> None:
             "value": "Alessia playlist",
         }
     ]
+
+
+def test_safe_ax_fallback_does_not_read_values(monkeypatch) -> None:
+    mac = MacOS()
+    root, button = object(), object()
+    requested = []
+    monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
+    monkeypatch.setattr(mac, "_pid", lambda app: 42)
+    monkeypatch.setattr(mac, "_application_element", lambda pid, **kwargs: root)
+    monkeypatch.setattr(mac, "_is_ax_element", lambda value: value is button)
+
+    def fake_attributes(element, attributes):
+        requested.append(tuple(attributes))
+        values = {
+            root: {"AXRole": "AXApplication", "AXChildren": [button]},
+            button: {"AXRole": "AXButton", "AXTitle": "Use Password"},
+        }[element]
+        return {attribute: values.get(attribute) for attribute in attributes}
+
+    monkeypatch.setattr(mac, "_copy_attributes", fake_attributes)
+    monkeypatch.setattr(mac, "_actions", lambda element: [])
+    monkeypatch.setattr(
+        macos_module.AS,
+        "AXUIElementCopyParameterizedAttributeValue",
+        lambda *args: (
+            macos_module.AS.kAXErrorParameterizedAttributeUnsupported,
+            None,
+        ),
+    )
+
+    results = mac.ax.query(
+        app="Chrome",
+        text="Use Password",
+        attributes=mac.ax._SAFE_ATTRIBUTES,
+        include_actions=False,
+    )
+
+    assert results[0]["title"] == "Use Password"
+    assert all("AXValue" not in attributes for attributes in requested)
+
+
+def test_snapshot_tree_can_preserve_earlier_element_handles(monkeypatch) -> None:
+    mac = MacOS()
+    first, second = object(), object()
+    monkeypatch.setattr(
+        mac,
+        "_copy_attributes",
+        lambda element, attributes: {
+            attribute: ("AXApplication" if attribute == "AXRole" else None)
+            for attribute in attributes
+        },
+    )
+    monkeypatch.setattr(mac, "_actions", lambda element: [])
+
+    mac._snapshot_tree(
+        first,
+        max_depth=1,
+        max_nodes=2,
+        include_menu_bar=False,
+        attributes=("AXRole",),
+    )
+    mac._snapshot_tree(
+        second,
+        max_depth=1,
+        max_nodes=2,
+        include_menu_bar=False,
+        attributes=("AXRole",),
+        reset_elements=False,
+    )
+
+    assert mac._element(0) is first
+    assert mac._element(1) is second
+
+
+def test_cleared_element_handles_never_alias() -> None:
+    mac = MacOS()
+    old_index = mac._remember_element(object())
+    mac._elements = {}
+    new_element = object()
+    new_index = mac._remember_element(new_element)
+
+    assert new_index > old_index
+    assert mac._element(new_index) is new_element
+    with pytest.raises(MacOSError, match="Unknown element index"):
+        mac._element(old_index)
+
+
+def test_ax_query_all_scans_every_app_without_mutating_targets(monkeypatch) -> None:
+    mac = MacOS()
+    apps = [
+        {"name": "First", "bundle_id": "one", "pid": 1, "path": "/First"},
+        {"name": "Blocked", "bundle_id": "two", "pid": 2, "path": "/Blocked"},
+        {
+            "name": "Messages",
+            "bundle_id": "com.apple.MobileSMS",
+            "pid": 99,
+            "path": "/Messages",
+        },
+        {"name": "Third", "bundle_id": "three", "pid": 3, "path": "/Third"},
+    ]
+    elements = {1: object(), 99: object(), 3: object()}
+    calls = []
+    original_target = {"name": "Current", "bundle_id": "current", "pid": 7}
+    mac._last_app = original_target
+    monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
+    monkeypatch.setattr(mac, "list_apps", lambda: apps)
+
+    def fake_search(*, app_pid, limit, reset_elements, attributes, **kwargs):
+        calls.append(
+            (
+                app_pid,
+                limit,
+                reset_elements,
+                tuple(attributes),
+                kwargs["messaging_timeout"],
+                kwargs["enhance"],
+            )
+        )
+        if app_pid == 2:
+            raise MacOSError("inaccessible")
+        index = mac._remember_element(elements[app_pid])
+        return [{"element_index": index, "role": "AXButton"}]
+
+    monkeypatch.setattr(mac, "ax_search", fake_search)
+
+    results = mac.ax.query_all("Not Now", limit=2)
+
+    assert [result["app"]["pid"] for result in results] == [1, 99]
+    assert [call[:3] for call in calls] == [
+        (1, 2, False),
+        (2, 1, False),
+        (99, 1, False),
+    ]
+    assert all("AXValue" not in call[3] for call in calls)
+    assert all(call[4:] == (0.5, False) for call in calls)
+    assert mac._element(0) is elements[1]
+    assert mac._element(1) is elements[99]
+    assert mac._last_app is original_target
+
+    with pytest.raises(MacOSError, match="requires non-empty text"):
+        mac.ax.query_all()
+    with pytest.raises(MacOSError, match="at least one"):
+        mac.ax.query_all("Not Now", apps=[])
+
+
+def test_ax_role_aliases_and_app_selectors_fail_closed(monkeypatch) -> None:
+    mac = MacOS()
+    arguments = {}
+
+    def fake_search_all(**kwargs):
+        arguments.update(kwargs)
+        return []
+
+    monkeypatch.setattr(mac, "ax_search_all", fake_search_all)
+
+    mac.ax.query_all("Not Now", role="text_field", apps="Safari")
+
+    assert arguments["text"] == "Not Now"
+    assert arguments["search_key"] == "AXTextFieldSearchKey"
+    assert arguments["apps"] == "Safari"
+    assert mac.ax._search_key(None, "any") == "AXAnyTypeSearchKey"
+
+    with pytest.raises(MacOSError, match="Unknown AX role"):
+        mac.ax.query_all("Not Now", role="buton")
+    with pytest.raises(MacOSError, match="role or search_key"):
+        mac.ax.query_all(
+            "Not Now",
+            role="button",
+            search_key="AXAnyTypeSearchKey",
+        )
+    with pytest.raises(MacOSError, match="at least one"):
+        mac._normalize_apps([])
+
+
+def test_ax_app_resolution_deduplicates_pids(monkeypatch) -> None:
+    mac = MacOS()
+    info = {"name": "Safari", "bundle_id": "com.apple.Safari", "pid": 42}
+    monkeypatch.setattr(mac, "_resolve_app", lambda selector: (object(), info))
+
+    resolved = mac._resolve_apps(("Safari", "com.apple.Safari", "42"))
+
+    assert resolved == [info]
+
+
+def test_ax_wait_retries_until_one_match(monkeypatch) -> None:
+    mac = MacOS()
+    responses = iter([[], [{"element_index": 7, "role": "AXButton"}]])
+    monkeypatch.setattr(mac, "ax_search", lambda **kwargs: next(responses))
+    monkeypatch.setattr(macos_module.time, "sleep", lambda seconds: None)
+
+    match = mac.ax.wait(app="Chrome", text="Use Password", timeout=1.0)
+
+    assert match["element_index"] == 7
+
+
+def test_ax_wait_fails_closed_on_ambiguity_and_timeout(monkeypatch) -> None:
+    mac = MacOS()
+    monkeypatch.setattr(
+        mac,
+        "ax_search_all",
+        lambda **kwargs: [
+            {"element_index": 1},
+            {"element_index": 2},
+        ],
+    )
+    with pytest.raises(MacOSError, match="found 2 matches"):
+        mac.ax.wait(all_apps=True, text="Not Now")
+
+    monkeypatch.setattr(mac, "ax_search", lambda **kwargs: [])
+    with pytest.raises(MacOSError, match="timed out"):
+        mac.ax.wait(app="Chrome", text="Missing", timeout=0)
+
+    with pytest.raises(MacOSError, match="exactly one"):
+        mac.ax.wait(app="Chrome", all_apps=True, text="Not Now")
+    with pytest.raises(MacOSError, match="all_apps=True or apps"):
+        mac.ax.wait(all_apps=True, apps=["Chrome"], text="Not Now")
+    with pytest.raises(MacOSError, match="requires non-empty text"):
+        mac.ax.wait(all_apps=True)
+
+
+def test_ax_press_supports_one_line_cross_app_use(monkeypatch) -> None:
+    mac = MacOS()
+    match = {
+        "element_index": 4,
+        "role": "AXButton",
+        "actions": ["AXPress"],
+        "app": {"name": "Chrome", "pid": 42},
+    }
+    wait_arguments = {}
+    actions = []
+
+    def fake_wait(**kwargs):
+        wait_arguments.update(kwargs)
+        return match
+
+    monkeypatch.setattr(mac, "ax_wait", fake_wait)
+    monkeypatch.setattr(
+        mac,
+        "_frontmost_app",
+        lambda: {"name": "Ghostty", "pid": 1},
+    )
+    monkeypatch.setattr(
+        mac,
+        "perform_action",
+        lambda element_index, action: actions.append((element_index, action)),
+    )
+
+    assert mac.ax.press("Not Now", role="button", all_apps=True) is match
+    assert wait_arguments["text"] == "Not Now"
+    assert wait_arguments["search_key"] == "AXButtonSearchKey"
+    assert wait_arguments["include_actions"] is True
+    assert actions == [(4, "AXPress")]
+
+
+def test_ax_press_reports_target_activation(monkeypatch) -> None:
+    mac = MacOS()
+    frontmost = iter(
+        [
+            {"name": "Ghostty", "pid": 1},
+            {"name": "Chrome", "pid": 42},
+        ]
+    )
+    monkeypatch.setattr(
+        mac,
+        "ax_wait",
+        lambda **kwargs: {
+            "element_index": 4,
+            "role": "AXButton",
+            "app": {"name": "Chrome", "pid": 42},
+        },
+    )
+    monkeypatch.setattr(mac, "_pid", lambda app: 99)
+    monkeypatch.setattr(mac, "_frontmost_app", lambda: next(frontmost))
+    monkeypatch.setattr(mac, "perform_action", lambda element_index, action: None)
+
+    with pytest.raises(FocusChangedError, match="became frontmost"):
+        mac.ax.press(app="Chrome", text="Not Now")
+
+
+def test_ax_wait_gone_requires_two_empty_polls(monkeypatch) -> None:
+    mac = MacOS()
+    responses = iter(
+        [
+            [{"element_index": 1}],
+            [],
+            [{"element_index": 2}],
+            [],
+            [],
+        ]
+    )
+    monkeypatch.setattr(mac, "ax_search", lambda **kwargs: next(responses))
+    monkeypatch.setattr(macos_module.time, "sleep", lambda seconds: None)
+
+    mac.ax.wait_gone("Not Now", app="Chrome", timeout=1.0)
+
+
+def test_ax_wait_gone_handles_exit_and_timeout(monkeypatch) -> None:
+    mac = MacOS()
+    monkeypatch.setattr(
+        mac,
+        "ax_search",
+        lambda **kwargs: (_ for _ in ()).throw(ApplicationNotFoundError("not running")),
+    )
+    mac.ax.wait_gone("Not Now", app="Chrome")
+
+    monkeypatch.setattr(
+        mac,
+        "ax_search",
+        lambda **kwargs: [{"element_index": 1}],
+    )
+    with pytest.raises(MacOSError, match="match remained"):
+        mac.ax.wait_gone("Not Now", app="Chrome", timeout=0)
 
 
 def test_background_click_posts_to_pid_without_warp_or_activate(monkeypatch) -> None:

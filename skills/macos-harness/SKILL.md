@@ -53,6 +53,43 @@ mac.script('tell application "Spotify" to play')
 Use ordinary Python for local context and one-off logic. Do not add app-specific
 helpers when a short program can resolve the task.
 
+`mac.ax` also covers background AutoFill sheets and system popovers outside
+the app you already target:
+
+```python
+mac.ax.press("Not Now", role="button", all_apps=True)
+```
+
+`query`, `query_all`, `wait`, `wait_gone`, and `press` accept search text as
+the first positional argument. Use `role=` for common targets: `any`, `button`,
+`checkbox`, `combo box`, `image`, `link`, `list`, `menu`, `menu item`,
+`radio button`, `static text`, `table`, `text area`, and `text field`. An
+unknown role raises `MacOSError`. Do not pass both `role` and `search_key`.
+
+Use `apps=` to limit a cross-process search. Pass one app name, bundle ID,
+path, or PID, or pass an iterable of selectors. Duplicate PIDs are removed.
+`apps="Safari"` is one selector, not an iterable of characters. An empty
+iterable raises instead of widening the search.
+
+`query_all` searches every running app or the set named in `apps`. It applies
+one positive global `limit`, times out each process, and returns owner metadata.
+A broad search skips inaccessible processes. A scoped search reports target
+failures. Element handles remain valid until the next AX snapshot or search.
+
+Cross-process calls require non-empty search text. Default attributes exclude
+`AXValue`; reading a value requires a separate `ax.get` or explicit attributes.
+
+`wait` accepts exactly one scope: `app`, `all_apps=True`, or `apps`. Zero
+matches keep polling. Multiple matches fail closed and report owner, role, and
+title details. `wait_gone` requires two consecutive empty polls; a named app
+that exits counts as gone. `press` waits for one match, requires `AXPress`, and
+returns the match. It never requests activation. If the target makes itself
+frontmost, `press` raises `FocusChangedError`; it cannot undo that focus change.
+
+These operations act only on accessible UI that macOS already rendered. They
+cannot make secure UI appear in an inactive app or bypass Touch ID, passkeys,
+CAPTCHA, account recovery, or another check that requires the user.
+
 ## Choose the lowest useful mode
 
 1. When identity depends on local context (`my`, `friend`, or prior activity),
@@ -77,12 +114,16 @@ repeated keys, clicks, deletion loops, or bulk input.
 - `mac.move()` moves only that pointer; it cannot produce native hover.
 - Inactive apps may reject raw clicks. After one verified failure, switch mode.
 - Never launch a closed app or use a custom URL scheme when focus is forbidden.
+- `mac.ax.query_all/wait/press/wait_gone` never bypass Touch ID, passkeys,
+  CAPTCHA, account recovery, or other checks that need the real user present.
 - Screenshot coordinates come from the latest `mac.see()` and preserve window
   bounds and Retina scaling.
 
 Secondary primitives are `mac.move`, `drag`, `scroll`, `show_pointer`, and
 `hide_pointer`. `mac.ax.query()` returns compact matches and bounds fallback
-traversal; lower `max_nodes` for especially large apps.
+traversal; lower `max_nodes` for especially large apps. `mac.ax.query_all()`,
+`.wait()`, `.press()`, and `.wait_gone()` extend that traversal across every
+running process for background AutoFill and system popovers.
 
 ## Browser and permissions
 

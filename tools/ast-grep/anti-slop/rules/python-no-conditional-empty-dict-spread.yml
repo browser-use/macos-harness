@@ -1,0 +1,14 @@
+id: anti-slop-python-no-conditional-empty-dict-spread
+language: python
+severity: error
+message: This spread conditionally omits keys behind an empty-dict ternary.
+note: "Build the dict in separate statements and add the key only when present, e.g. `d = {}; if cond: d[\"k\"] = v`."
+rule:
+  kind: dictionary_splat
+  has:
+    kind: parenthesized_expression
+    has:
+      kind: conditional_expression
+      has:
+        kind: dictionary
+        not: { has: { kind: pair } }

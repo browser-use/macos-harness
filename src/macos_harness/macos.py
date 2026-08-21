@@ -41,6 +41,10 @@ class AccessibilityPermissionError(MacOSError):
     """The calling process lacks macOS Accessibility permission."""
 
 
+class ApplicationNotFoundError(MacOSError):
+    """No running application matches a caller-provided selector."""
+
+
 class FocusChangedError(MacOSError):
     """A background-targeted action made its target frontmost."""
 
@@ -68,6 +72,21 @@ _AX_ATTRIBUTES = (
     "AXChildren",
     "AXWindows",
 )
+_AX_SAFE_ATTRIBUTES = (
+    "AXRole",
+    "AXTitle",
+    "AXDescription",
+    "AXPlaceholderValue",
+    "AXHelp",
+    "AXIdentifier",
+    "AXDOMIdentifier",
+    "AXEnabled",
+    "AXFocused",
+    "AXSelected",
+    "AXHidden",
+    "AXFrame",
+)
+_AX_CROSS_APP_MESSAGING_TIMEOUT = 0.5
 _AX_NODE_MAPPING = {
     "AXSubrole": "subrole",
     "AXRoleDescription": "role_description",
@@ -274,6 +293,7 @@ class MacOS:
     def __init__(self) -> None:
         _require_macos()
         self._elements: dict[int, Any] = {}
+        self._element_seq = 0
         self._last_app: dict[str, Any] | None = None
         self._last_windows: list[dict[str, Any]] = []
         self._last_screenshot: dict[str, Any] | None = None
@@ -372,7 +392,7 @@ class MacOS:
                 f"{after['name']} became frontmost during {operation}; stopped"
             )
 
-    def _resolve_app(self, query: str | None) -> tuple[Any, dict[str, Any]]:
+    def _resolve_app(self, query: str | int | None) -> tuple[Any, dict[str, Any]]:
         if not query and self._last_app:
             query = str(self._last_app["pid"])
         if not query:
@@ -392,7 +412,7 @@ class MacOS:
 
         matches = exact or candidates
         if not matches:
-            raise MacOSError(f"No running application matches {query!r}")
+            raise ApplicationNotFoundError(f"No running application matches {query!r}")
         if len(matches) > 1:
             names = ", ".join(
                 f"{item[1]['name']} ({item[1]['pid']})" for item in matches[:8]
@@ -426,8 +446,19 @@ class MacOS:
             )
 
     @staticmethod
-    def _application_element(pid: int) -> Any:
+    def _application_element(
+        pid: int,
+        *,
+        messaging_timeout: float | None = None,
+        enhance: bool = True,
+    ) -> Any:
         root = AS.AXUIElementCreateApplication(pid)
+        if messaging_timeout is not None:
+            error = AS.AXUIElementSetMessagingTimeout(root, messaging_timeout)
+            if error != _AX_SUCCESS:
+                raise _ax_error("Set AX messaging timeout", error)
+        if not enhance:
+            return root
         error, enhanced = AS.AXUIElementCopyAttributeValue(
             root, "AXEnhancedUserInterface", None
         )
@@ -540,17 +571,33 @@ class MacOS:
         max_depth: int,
         max_nodes: int,
         include_menu_bar: bool,
+        attributes: Iterable[str] = _AX_ATTRIBUTES,
         extra_attributes: Iterable[str] = (),
         include_actions: bool = True,
         include_settable: bool = True,
+        reset_elements: bool = True,
     ) -> list[dict[str, Any]]:
-        self._elements = {}
+        if reset_elements:
+            self._elements = {}
         nodes: list[dict[str, Any]] = []
         seen: set[int] = set()
         requested_attributes = tuple(
-            dict.fromkeys((*_AX_ATTRIBUTES, *(str(item) for item in extra_attributes)))
+            dict.fromkeys(
+                (
+                    *(str(item) for item in attributes),
+                    "AXRole",
+                    "AXChildren",
+                    "AXWindows",
+                    *(str(item) for item in extra_attributes),
+                )
+            )
         )
-        standard_attributes = set(_AX_ATTRIBUTES)
+        standard_attributes = {
+            *(str(item) for item in attributes),
+            "AXRole",
+            "AXChildren",
+            "AXWindows",
+        }
 
         def visit(element: Any, depth: int) -> None:
             if depth > max_depth or len(nodes) >= max_nodes:
@@ -564,17 +611,16 @@ class MacOS:
             seen.add(identity)
 
             raw = self._copy_attributes(element, requested_attributes)
-            if raw["AXRole"] == "AXMenuBar" and not include_menu_bar:
+            if raw.get("AXRole") == "AXMenuBar" and not include_menu_bar:
                 return
-            index = len(nodes)
-            self._elements[index] = element
+            index = self._remember_element(element)
             node: dict[str, Any] = {
                 "element_index": index,
                 "depth": depth,
-                "role": self._jsonable(raw["AXRole"]),
+                "role": self._jsonable(raw.get("AXRole")),
             }
             for source, target in _AX_NODE_MAPPING.items():
-                value = self._jsonable(raw[source])
+                value = self._jsonable(raw.get(source))
                 if value not in (None, "", [], {}):
                     node[target] = value
             extra = {
@@ -599,9 +645,9 @@ class MacOS:
                     node["settable"] = settable
             nodes.append(node)
 
-            children = raw["AXChildren"]
+            children = raw.get("AXChildren")
             if not children and depth == 0:
-                children = raw["AXWindows"]
+                children = raw.get("AXWindows")
             if isinstance(children, Iterable) and not isinstance(
                 children, (str, bytes, dict)
             ):
@@ -699,7 +745,8 @@ class MacOS:
             ) from exc
 
     def _remember_element(self, element: Any) -> int:
-        index = max(self._elements, default=-1) + 1
+        index = self._element_seq
+        self._element_seq += 1
         self._elements[index] = element
         return index
 
@@ -761,7 +808,8 @@ class MacOS:
         self,
         *,
         element_index: int | None = None,
-        app: str | None = None,
+        app: str | int | None = None,
+        app_pid: int | None = None,
         search_key: str = "AXAnyTypeSearchKey",
         text: str | None = None,
         visible_only: bool = False,
@@ -771,16 +819,29 @@ class MacOS:
         attributes: Iterable[str] = _AX_ATTRIBUTES,
         include_actions: bool = True,
         max_nodes: int = 500,
+        reset_elements: bool = True,
+        messaging_timeout: float | None = None,
+        enhance: bool = True,
     ) -> list[dict[str, Any]]:
         """Search a Chromium/WebKit AX subtree, including virtualized nodes."""
         self._ensure_accessibility()
+        if element_index is not None and (app is not None or app_pid is not None):
+            raise MacOSError("AX search element_index cannot be combined with app")
+        if app is not None and app_pid is not None:
+            raise MacOSError("AX search accepts app or app_pid, not both")
         if element_index is None:
-            pid = self._pid(app)
+            pid = app_pid if app_pid is not None else self._pid(app)
             if pid is None:
                 raise MacOSError("AX search requires an app or a prior app snapshot")
-            root = self._application_element(pid)
+            root = self._application_element(
+                pid,
+                messaging_timeout=messaging_timeout,
+                enhance=enhance,
+            )
         else:
             root = self._element(element_index)
+        if reset_elements:
+            self._elements = {}
 
         directions = {
             "next": "AXDirectionNext",
@@ -816,6 +877,7 @@ class MacOS:
                 attributes=attributes,
                 include_actions=include_actions,
                 max_nodes=max_nodes,
+                reset_elements=False,
             )
         if error != _AX_SUCCESS:
             raise _ax_error("AXUIElementsForSearchPredicate", error)
@@ -848,6 +910,7 @@ class MacOS:
         attributes: Iterable[str],
         include_actions: bool,
         max_nodes: int,
+        reset_elements: bool,
     ) -> list[dict[str, Any]]:
         """Search a small ordinary AX tree when optimized search is unavailable."""
         if max_nodes <= 0:
@@ -858,14 +921,23 @@ class MacOS:
 
         role = _AX_SEARCH_ROLES.get(search_key)
         needle = text.casefold() if text is not None else None
+        traversal_attributes = tuple(
+            dict.fromkeys(
+                (
+                    *(str(item) for item in attributes),
+                    "AXHidden",
+                )
+            )
+        )
         nodes = self._snapshot_tree(
             root,
             max_depth=1 if immediate_descendants_only else 25,
             max_nodes=max_nodes,
             include_menu_bar=True,
-            extra_attributes=attributes,
+            attributes=traversal_attributes,
             include_actions=include_actions,
             include_settable=False,
+            reset_elements=reset_elements,
         )[1:]
         if direction.casefold() == "previous":
             nodes.reverse()
@@ -903,6 +975,316 @@ class MacOS:
                 if len(matches) >= result_limit:
                     break
         return matches
+
+    @staticmethod
+    def _normalize_apps(
+        apps: str | int | Iterable[str | int] | None,
+    ) -> tuple[str, ...] | None:
+        if apps is None:
+            return None
+        values = (apps,) if isinstance(apps, (str, int)) else tuple(apps)
+        normalized = tuple(str(value).strip() for value in values)
+        if not normalized or any(not value for value in normalized):
+            raise MacOSError("apps must contain at least one non-empty selector")
+        return normalized
+
+    def _resolve_apps(self, selectors: tuple[str, ...] | None) -> list[dict[str, Any]]:
+        if selectors is None:
+            return self.list_apps()
+        resolved: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        for selector in selectors:
+            _, info = self._resolve_app(selector)
+            pid = int(info["pid"])
+            if pid in seen:
+                continue
+            seen.add(pid)
+            resolved.append(info)
+        return resolved
+
+    @classmethod
+    def _ax_scope(
+        cls,
+        *,
+        app: str | int | None,
+        all_apps: bool,
+        apps: str | int | Iterable[str | int] | None,
+        text: str | None,
+    ) -> tuple[tuple[str, ...] | None, bool]:
+        selectors = cls._normalize_apps(apps)
+        if app is not None and (all_apps or selectors is not None):
+            raise MacOSError("Pass exactly one of app, all_apps=True, or apps")
+        if all_apps and selectors is not None:
+            raise MacOSError("Pass all_apps=True or apps, not both")
+        cross_process = all_apps or selectors is not None
+        if cross_process and not text:
+            raise MacOSError("Cross-app AX search requires non-empty text")
+        return selectors, cross_process
+
+    def ax_search_all(
+        self,
+        *,
+        apps: str | int | Iterable[str | int] | None = None,
+        search_key: str = "AXAnyTypeSearchKey",
+        text: str | None = None,
+        visible_only: bool = True,
+        limit: int = 20,
+        direction: str = "next",
+        immediate_descendants_only: bool = False,
+        attributes: Iterable[str] = _AX_SAFE_ATTRIBUTES,
+        include_actions: bool = False,
+        max_nodes: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Search selected running AX trees without activation."""
+        self._ensure_accessibility()
+        if not text:
+            raise MacOSError("Cross-app AX search requires non-empty text")
+        if direction.casefold() not in {"next", "previous"}:
+            raise MacOSError("AX search direction must be 'next' or 'previous'")
+        if max_nodes <= 0:
+            raise MacOSError("AX fallback max_nodes must be positive")
+        if limit <= 0:
+            raise MacOSError("Cross-app AX search limit must be positive")
+
+        selectors = self._normalize_apps(apps)
+        infos = self._resolve_apps(selectors)
+        strict = selectors is not None
+        self._elements = {}
+        matches: list[dict[str, Any]] = []
+        first_error: MacOSError | None = None
+        searched = False
+        for info in infos:
+            remaining = limit - len(matches)
+            if remaining == 0:
+                break
+            try:
+                app_matches = self.ax_search(
+                    app_pid=int(info["pid"]),
+                    search_key=search_key,
+                    text=text,
+                    visible_only=visible_only,
+                    limit=remaining,
+                    direction=direction,
+                    immediate_descendants_only=immediate_descendants_only,
+                    attributes=attributes,
+                    include_actions=include_actions,
+                    max_nodes=max_nodes,
+                    reset_elements=False,
+                    messaging_timeout=_AX_CROSS_APP_MESSAGING_TIMEOUT,
+                    enhance=False,
+                )
+            except MacOSError as exc:
+                if strict:
+                    raise MacOSError(
+                        f"AX search failed for {info['name']} ({info['pid']}): {exc}"
+                    ) from exc
+                if first_error is None:
+                    first_error = exc
+                continue
+            searched = True
+            for match in app_matches:
+                match["app"] = dict(info)
+                matches.append(match)
+        if not searched and first_error is not None:
+            raise first_error
+        return matches
+
+    @staticmethod
+    def _match_summary(match: dict[str, Any]) -> str:
+        owner = match.get("app")
+        app_name = (
+            owner.get("name", "current app")
+            if isinstance(owner, dict)
+            else "current app"
+        )
+        role = str(match.get("role") or "AXUnknown")
+        label = str(
+            match.get("title")
+            or match.get("description")
+            or match.get("identifier")
+            or "untitled"
+        )
+        return f"{app_name}: {role} {label!r}"
+
+    def ax_wait(
+        self,
+        *,
+        app: str | int | None = None,
+        all_apps: bool = False,
+        apps: str | int | Iterable[str | int] | None = None,
+        search_key: str = "AXAnyTypeSearchKey",
+        text: str | None = None,
+        visible_only: bool = True,
+        direction: str = "next",
+        immediate_descendants_only: bool = False,
+        attributes: Iterable[str] = _AX_SAFE_ATTRIBUTES,
+        include_actions: bool = False,
+        max_nodes: int = 500,
+        timeout: float = 5.0,
+        interval: float = 0.1,
+    ) -> dict[str, Any]:
+        """Wait for exactly one AX match and fail closed on ambiguity."""
+        selectors, cross_process = self._ax_scope(
+            app=app,
+            all_apps=all_apps,
+            apps=apps,
+            text=text,
+        )
+        if timeout < 0:
+            raise MacOSError("AX wait timeout must not be negative")
+        if interval <= 0:
+            raise MacOSError("AX wait interval must be positive")
+
+        deadline = time.monotonic() + timeout
+        while True:
+            if cross_process:
+                matches = self.ax_search_all(
+                    apps=selectors,
+                    search_key=search_key,
+                    text=text,
+                    visible_only=visible_only,
+                    limit=2,
+                    direction=direction,
+                    immediate_descendants_only=immediate_descendants_only,
+                    attributes=attributes,
+                    include_actions=include_actions,
+                    max_nodes=max_nodes,
+                )
+            else:
+                matches = self.ax_search(
+                    app=app,
+                    search_key=search_key,
+                    text=text,
+                    visible_only=visible_only,
+                    limit=2,
+                    direction=direction,
+                    immediate_descendants_only=immediate_descendants_only,
+                    attributes=attributes,
+                    include_actions=include_actions,
+                    max_nodes=max_nodes,
+                )
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                details = "; ".join(self._match_summary(match) for match in matches[:4])
+                raise MacOSError(f"AX wait found {len(matches)} matches: {details}")
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise MacOSError("AX wait timed out without a match")
+            time.sleep(min(interval, remaining))
+
+    def ax_wait_gone(
+        self,
+        *,
+        app: str | int | None = None,
+        all_apps: bool = False,
+        apps: str | int | Iterable[str | int] | None = None,
+        search_key: str = "AXAnyTypeSearchKey",
+        text: str | None = None,
+        visible_only: bool = True,
+        direction: str = "next",
+        immediate_descendants_only: bool = False,
+        attributes: Iterable[str] = _AX_SAFE_ATTRIBUTES,
+        max_nodes: int = 500,
+        timeout: float = 5.0,
+        interval: float = 0.1,
+    ) -> None:
+        """Wait for an AX match to be absent in two consecutive polls."""
+        selectors, cross_process = self._ax_scope(
+            app=app,
+            all_apps=all_apps,
+            apps=apps,
+            text=text,
+        )
+        if timeout < 0:
+            raise MacOSError("AX wait timeout must not be negative")
+        if interval <= 0:
+            raise MacOSError("AX wait interval must be positive")
+
+        deadline = time.monotonic() + timeout
+        empty_polls = 0
+        while True:
+            try:
+                if cross_process:
+                    matches = self.ax_search_all(
+                        apps=selectors,
+                        search_key=search_key,
+                        text=text,
+                        visible_only=visible_only,
+                        limit=1,
+                        direction=direction,
+                        immediate_descendants_only=immediate_descendants_only,
+                        attributes=attributes,
+                        max_nodes=max_nodes,
+                    )
+                else:
+                    matches = self.ax_search(
+                        app=app,
+                        search_key=search_key,
+                        text=text,
+                        visible_only=visible_only,
+                        limit=1,
+                        direction=direction,
+                        immediate_descendants_only=immediate_descendants_only,
+                        attributes=attributes,
+                        max_nodes=max_nodes,
+                    )
+            except ApplicationNotFoundError:
+                if app is not None or (selectors is not None and len(selectors) == 1):
+                    return
+                raise
+
+            empty_polls = empty_polls + 1 if not matches else 0
+            if empty_polls >= 2:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise MacOSError("AX wait timed out while the match remained")
+            time.sleep(min(interval, remaining))
+
+    def ax_press(
+        self,
+        *,
+        app: str | int | None = None,
+        all_apps: bool = False,
+        apps: str | int | Iterable[str | int] | None = None,
+        search_key: str = "AXAnyTypeSearchKey",
+        text: str | None = None,
+        visible_only: bool = True,
+        direction: str = "next",
+        immediate_descendants_only: bool = False,
+        attributes: Iterable[str] = _AX_SAFE_ATTRIBUTES,
+        max_nodes: int = 500,
+        timeout: float = 5.0,
+        interval: float = 0.1,
+    ) -> dict[str, Any]:
+        """Press one unique AX target and detect foreground activation."""
+        match = self.ax_wait(
+            app=app,
+            all_apps=all_apps,
+            apps=apps,
+            search_key=search_key,
+            text=text,
+            visible_only=visible_only,
+            direction=direction,
+            immediate_descendants_only=immediate_descendants_only,
+            attributes=attributes,
+            include_actions=True,
+            max_nodes=max_nodes,
+            timeout=timeout,
+            interval=interval,
+        )
+        owner = match.get("app")
+        target_pid = int(owner["pid"]) if isinstance(owner, dict) else self._pid(app)
+        if target_pid is None:
+            raise MacOSError("AX press requires app, all_apps=True, or apps")
+        before = self._frontmost_app()
+        try:
+            self.perform_action(int(match["element_index"]), "AXPress")
+        finally:
+            self._guard_focus(before, target_pid, "AX press")
+        return match
 
     def set(self, element_index: int, value: Any, attribute: str = "AXValue") -> None:
         element = self._element(element_index)
@@ -1127,7 +1509,7 @@ class MacOS:
 
     # --- direct visual and keyboard input -------------------------------
 
-    def _pid(self, app: str | None) -> int | None:
+    def _pid(self, app: str | int | None) -> int | None:
         if app is None and self._last_app is None:
             return None
         _, info = self._resolve_app(app)
