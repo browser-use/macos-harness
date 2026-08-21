@@ -4,6 +4,7 @@ __pycache__/
 *.py[cod]
 dist/
 tmp/
+native/**/.build/
 
 # Local task artifacts can contain private workspace data.
 slack-*.json

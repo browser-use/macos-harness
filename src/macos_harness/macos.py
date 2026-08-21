@@ -8,6 +8,7 @@ the semantic tree/actions; Core Graphics supplies raw input; the system
 from __future__ import annotations
 
 import json
+import os
 import re
 import struct
 import subprocess
@@ -274,6 +275,21 @@ def _ax_error(operation: str, error: int) -> MacOSError:
     return MacOSError(f"{operation} failed with AXError {error}")
 
 
+_BACKENDS = ("python", "native", "auto")
+
+
+def _resolve_backend(backend: str | None) -> str:
+    """Resolve python/native/auto from an explicit value or MACOS_HARNESS_BACKEND."""
+    if backend is None:
+        backend = os.environ.get("MACOS_HARNESS_BACKEND", "python")
+    normalized = str(backend).strip().casefold() or "python"
+    if normalized not in _BACKENDS:
+        raise MacOSError(
+            f"Unknown backend {normalized!r}; choose one of: {', '.join(_BACKENDS)}"
+        )
+    return normalized
+
+
 def _split_scroll_delta(delta: int, maximum: int) -> list[int]:
     """Split a wheel delta into small exact steps accepted reliably by apps."""
     if maximum <= 0:
@@ -290,7 +306,7 @@ def _split_scroll_delta(delta: int, maximum: int) -> list[int]:
 class MacOS:
     """Low-level macOS observation and control for one persistent process."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, backend: str | None = None) -> None:
         _require_macos()
         self._elements: dict[int, Any] = {}
         self._element_seq = 0
@@ -306,6 +322,9 @@ class MacOS:
         self._pointer_position: tuple[float, float] | None = None
         self._overlay = LivePointerOverlay()
         self.ax = Accessibility(self)
+        self._backend = _resolve_backend(backend)
+        self._native_client: Any | None = None
+        self._native_error: Exception | None = None
 
     # --- permissions and app discovery ---------------------------------
 
@@ -350,6 +369,10 @@ class MacOS:
         }
 
     def list_apps(self) -> list[dict[str, Any]]:
+        if self._backend != "python":
+            client = self._acquire_native()
+            if client is not None:
+                return client.list_apps()
         apps: list[dict[str, Any]] = []
         for app in NSWorkspace.sharedWorkspace().runningApplications():
             info = self._app_info(app)
@@ -750,6 +773,144 @@ class MacOS:
         self._elements[index] = element
         return index
 
+    def _local_element(self, element_index: int) -> Any:
+        """Resolve element_index to a local AXUIElement; never a native handle."""
+        element = self._element(element_index)
+        if not self._is_ax_element(element):
+            raise MacOSError(
+                f"Element {element_index} is a native agent handle; this "
+                "operation is local-only and unsupported for native handles"
+            )
+        return element
+
+    def _acquire_native(self) -> Any | None:
+        """Lazily connect the native agent client.
+
+        Returns the connected client, or ``None`` when ``backend == "auto"``
+        and the agent's socket could not be reached at all — a
+        ``NativeConnectionError``, strictly before any request, including
+        the handshake ping, was dispatched. ``backend == "native"`` always
+        raises instead of returning ``None``.
+
+        Every other native failure (a protocol-version mismatch, an
+        ``expected_pid`` identity mismatch, a malformed handshake response)
+        means a real request already reached *some* process on the other
+        end of the socket, so it hard-fails even under ``auto`` rather than
+        silently falling back to what could be a wrong or unexpected agent.
+        Only the ``NativeConnectionError`` case is cached, so repeated
+        calls do not re-probe an agent already known unreachable; a
+        handshake mismatch is left uncached so a transient race (e.g. the
+        agent mid-restart) gets a fresh chance to resolve on the next call.
+
+        The client is bound to the exact pid this call's own
+        ``agent.ensure_running()`` verified from the agent's own ping
+        response — never a second, separately-fetched ``agent.status()``
+        call, which could race a concurrent restart between the two reads.
+        """
+        if self._native_client is not None:
+            return self._native_client
+        if self._native_error is not None:
+            if self._backend == "auto":
+                return None
+            raise self._native_error
+        from . import agent, native
+
+        try:
+            verified = agent.ensure_running()
+        except agent.AgentUnavailableError as exc:
+            self._native_error = exc
+            if self._backend == "auto":
+                return None
+            raise
+        client = native.NativeClient(agent.socket_path(), expected_pid=verified["pid"])
+        try:
+            client.connect()
+        except native.NativeConnectionError as exc:
+            self._native_error = exc
+            if self._backend == "auto":
+                return None
+            raise
+        self._native_client = client
+        return self._native_client
+
+    def _intern_native_match(self, raw: dict[str, Any], client: Any) -> dict[str, Any]:
+        """Turn one wire match descriptor into a client-side element_index."""
+        from .native import _NativeHandle
+
+        match = dict(raw)
+        handle = match.pop("handle")
+        sentinel = _NativeHandle(client, handle, client.generation)
+        match["element_index"] = self._remember_element(sentinel)
+        return match
+
+    def _native_query(
+        self,
+        client: Any,
+        *,
+        pid: int,
+        search_key: str,
+        text: str | None,
+        visible_only: bool,
+        limit: int,
+        direction: str,
+        immediate_descendants_only: bool,
+        attributes: Iterable[str],
+        include_actions: bool,
+        max_nodes: int,
+        reset_elements: bool,
+        messaging_timeout: float | None,
+        enhance: bool,
+    ) -> list[dict[str, Any]]:
+        if reset_elements:
+            self._elements = {}
+        params = {
+            "app_pid": pid,
+            "search_key": search_key,
+            "text": text,
+            "visible_only": bool(visible_only),
+            "limit": int(limit),
+            "direction": direction,
+            "immediate_descendants_only": bool(immediate_descendants_only),
+            "attributes": [str(item) for item in attributes],
+            "include_actions": bool(include_actions),
+            "max_nodes": int(max_nodes),
+            "reset_elements": bool(reset_elements),
+            "messaging_timeout": messaging_timeout,
+            "enhance": bool(enhance),
+        }
+        return [self._intern_native_match(raw, client) for raw in client.query(params)]
+
+    def _native_press(
+        self,
+        client: Any,
+        *,
+        pid: int,
+        search_key: str,
+        text: str | None,
+        visible_only: bool,
+        direction: str,
+        immediate_descendants_only: bool,
+        attributes: Iterable[str],
+        max_nodes: int,
+    ) -> dict[str, Any]:
+        self._elements = {}
+        params = {
+            "app_pid": pid,
+            "search_key": search_key,
+            "text": text,
+            "visible_only": bool(visible_only),
+            "limit": 2,
+            "direction": direction,
+            "immediate_descendants_only": bool(immediate_descendants_only),
+            "attributes": [str(item) for item in attributes],
+            "include_actions": True,
+            "max_nodes": int(max_nodes),
+            "reset_elements": True,
+            "messaging_timeout": None,
+            "enhance": True,
+        }
+        return self._intern_native_match(client.press(params), client)
+
     def _describe_element(
         self,
         element: Any,
@@ -789,6 +950,8 @@ class MacOS:
 
     def get(self, element_index: int, attribute: str = "AXValue") -> Any:
         element = self._element(element_index)
+        if not self._is_ax_element(element):
+            return element.client.get(element, attribute)
         error, value = AS.AXUIElementCopyAttributeValue(element, attribute, None)
         if error != _AX_SUCCESS:
             raise _ax_error(f"Read {attribute} from element {element_index}", error)
@@ -799,6 +962,8 @@ class MacOS:
     ) -> dict[str, Any | None]:
         """Read multiple raw AX attributes with Apple's batch API."""
         element = self._element(element_index)
+        if not self._is_ax_element(element):
+            return element.client.get_attributes(element, tuple(attributes))
         return {
             name: self._jsonable(value)
             for name, value in self._copy_attributes(element, attributes).items()
@@ -824,11 +989,37 @@ class MacOS:
         enhance: bool = True,
     ) -> list[dict[str, Any]]:
         """Search a Chromium/WebKit AX subtree, including virtualized nodes."""
-        self._ensure_accessibility()
         if element_index is not None and (app is not None or app_pid is not None):
             raise MacOSError("AX search element_index cannot be combined with app")
         if app is not None and app_pid is not None:
             raise MacOSError("AX search accepts app or app_pid, not both")
+
+        if element_index is None and self._backend != "python":
+            native_pid = app_pid if app_pid is not None else self._pid(app)
+            if native_pid is None:
+                raise MacOSError("AX search requires an app or a prior app snapshot")
+            client = self._acquire_native()
+            if client is not None:
+                if direction.casefold() not in {"next", "previous"}:
+                    raise MacOSError("AX search direction must be 'next' or 'previous'")
+                return self._native_query(
+                    client,
+                    pid=native_pid,
+                    search_key=search_key,
+                    text=text,
+                    visible_only=visible_only,
+                    limit=limit,
+                    direction=direction.casefold(),
+                    immediate_descendants_only=immediate_descendants_only,
+                    attributes=attributes,
+                    include_actions=include_actions,
+                    max_nodes=max_nodes,
+                    reset_elements=reset_elements,
+                    messaging_timeout=messaging_timeout,
+                    enhance=enhance,
+                )
+
+        self._ensure_accessibility()
         if element_index is None:
             pid = app_pid if app_pid is not None else self._pid(app)
             if pid is None:
@@ -839,7 +1030,7 @@ class MacOS:
                 enhance=enhance,
             )
         else:
-            root = self._element(element_index)
+            root = self._local_element(element_index)
         if reset_elements:
             self._elements = {}
 
@@ -1036,7 +1227,8 @@ class MacOS:
         max_nodes: int = 500,
     ) -> list[dict[str, Any]]:
         """Search selected running AX trees without activation."""
-        self._ensure_accessibility()
+        if self._backend == "python":
+            self._ensure_accessibility()
         if not text:
             raise MacOSError("Cross-app AX search requires non-empty text")
         if direction.casefold() not in {"next", "previous"}:
@@ -1073,6 +1265,8 @@ class MacOS:
                     messaging_timeout=_AX_CROSS_APP_MESSAGING_TIMEOUT,
                     enhance=False,
                 )
+            except AccessibilityPermissionError:
+                raise
             except MacOSError as exc:
                 if strict:
                     raise MacOSError(
@@ -1260,6 +1454,31 @@ class MacOS:
         interval: float = 0.1,
     ) -> dict[str, Any]:
         """Press one unique AX target and detect foreground activation."""
+        targeted = not all_apps and apps is None
+        if targeted and self._backend != "python":
+            if direction.casefold() not in {"next", "previous"}:
+                raise MacOSError("AX search direction must be 'next' or 'previous'")
+            target_pid = self._pid(app)
+            if target_pid is None:
+                raise MacOSError("AX press requires app, all_apps=True, or apps")
+            client = self._acquire_native()
+            if client is not None:
+                # A single agent-side search-then-press request settles
+                # this directly; a client-side ax_wait traversal first
+                # would just be a second, redundant round trip for the
+                # same uniqueness check the agent already performs.
+                return self._native_press(
+                    client,
+                    pid=target_pid,
+                    search_key=search_key,
+                    text=text,
+                    visible_only=visible_only,
+                    direction=direction.casefold(),
+                    immediate_descendants_only=immediate_descendants_only,
+                    attributes=attributes,
+                    max_nodes=max_nodes,
+                )
+
         match = self.ax_wait(
             app=app,
             all_apps=all_apps,
@@ -1279,6 +1498,7 @@ class MacOS:
         target_pid = int(owner["pid"]) if isinstance(owner, dict) else self._pid(app)
         if target_pid is None:
             raise MacOSError("AX press requires app, all_apps=True, or apps")
+
         before = self._frontmost_app()
         try:
             self.perform_action(int(match["element_index"]), "AXPress")
@@ -1288,6 +1508,9 @@ class MacOS:
 
     def set(self, element_index: int, value: Any, attribute: str = "AXValue") -> None:
         element = self._element(element_index)
+        if not self._is_ax_element(element):
+            element.client.set(element, attribute, value)
+            return
         error = AS.AXUIElementSetAttributeValue(element, attribute, value)
         if error != _AX_SUCCESS:
             raise _ax_error(f"Set {attribute} on element {element_index}", error)
@@ -1297,6 +1520,9 @@ class MacOS:
     def perform_action(self, element_index: int, action: str = "AXPress") -> None:
         element = self._element(element_index)
         normalized = _ACTION_ALIASES.get(action.casefold(), action)
+        if not self._is_ax_element(element):
+            element.client.perform(element, normalized)
+            return
         available = self._actions(element)
         if normalized not in available:
             raise MacOSError(

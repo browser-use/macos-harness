@@ -52,3 +52,7 @@ packages = ["src/macos_harness"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "native: exercises the Swift native agent; skipped without the toolchain or a trusted, reachable agent",
+  "smoke: local-only end-to-end smoke check against a live macOS session",
+]

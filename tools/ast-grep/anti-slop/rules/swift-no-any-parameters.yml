@@ -1,0 +1,25 @@
+id: anti-slop-swift-no-any-parameters
+language: swift
+severity: error
+message: Parameter is typed `Any`, `AnyObject`, `[Any]`, or `Any?`.
+note: Accept a concrete protocol or type instead. Decode or narrow the value at the call boundary before invoking this function.
+rule:
+  kind: parameter
+  has:
+    any:
+      - kind: user_type
+        has:
+          kind: type_identifier
+          regex: '^(Any|AnyObject)$'
+      - kind: array_type
+        has:
+          kind: user_type
+          has:
+            kind: type_identifier
+            regex: '^Any$'
+      - kind: optional_type
+        has:
+          kind: user_type
+          has:
+            kind: type_identifier
+            regex: '^Any$'

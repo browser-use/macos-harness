@@ -1,0 +1,12 @@
+id: anti-slop-swift-no-runtime-type-dispatch
+language: swift
+severity: error
+message: Runtime type check (`is`, `case is`, or `type(of:)`) steers behavior instead of a typed contract.
+note: Express the branch as a protocol requirement, an enum with associated values, or function overloading resolved at compile time. Every `is`/`type(of:)` check is flagged; there is no accepted boundary exception in this pack.
+rule:
+  any:
+    - pattern: if $COND is $TYPE { $$$BODY }
+    - pattern: guard $COND is $TYPE else { $$$BODY }
+    - kind: switch_pattern
+      regex: '^is\s'
+    - pattern: "type(of: $EXPR)"

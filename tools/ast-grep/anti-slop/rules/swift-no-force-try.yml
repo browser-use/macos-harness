@@ -1,0 +1,7 @@
+id: anti-slop-swift-no-force-try
+language: swift
+severity: error
+message: Force try (`try!`) crashes the process on a thrown error.
+note: Use `try` with `do`/`catch`, or `try?` with explicit handling of the `nil` case.
+rule:
+  pattern: try! $EXPR

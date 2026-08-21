@@ -1,0 +1,7 @@
+id: anti-slop-swift-no-force-cast
+language: swift
+severity: error
+message: Force cast (`as!`) crashes the process on a shape mismatch.
+note: Use `as?` with explicit failure handling, or a `guard let ... as? T else { ... }` boundary check.
+rule:
+  pattern: $EXPR as! $TYPE

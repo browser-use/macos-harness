@@ -1,0 +1,17 @@
+id: anti-slop-swift-no-shape-in-symbol-names
+language: swift
+severity: error
+message: Symbol name encodes its storage shape (suffix `Dict`, `Array`, `Obj`, `Str`, or `Map`) instead of its domain role.
+note: Rename for what the value represents (e.g. `userPreferences`, not `preferencesDict`).
+rule:
+  kind: simple_identifier
+  regex: '(Dict|Array|Obj|Str|Map)$'
+  any:
+    - inside:
+        kind: pattern
+        inside:
+          kind: property_declaration
+    - inside:
+        kind: function_declaration
+    - inside:
+        kind: parameter

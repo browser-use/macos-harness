@@ -103,6 +103,82 @@ These calls act only on accessible UI that macOS already rendered. They cannot
 make secure UI appear in an inactive app. They cannot bypass Touch ID, passkeys,
 CAPTCHA, account recovery, or another check that requires the user.
 
+## Native backend
+
+`mac.*` runs entirely in Python by default. A separate, optional Swift agent
+can take over a fixed set of Accessibility calls over a local socket when you
+want it; nothing about the primitives above changes when it does.
+
+```bash
+export MACOS_HARNESS_BACKEND=native   # python (default) | native | auto
+macos-harness agent start
+macos-harness agent status
+macos-harness agent stop
+```
+
+`MACOS_HARNESS_BACKEND` selects the backend for every `MacOS()` instance the
+CLI creates; construct `MacOS(backend="python" | "native" | "auto")` directly
+for the same choice in your own code. The default stays `python`: nothing
+opens a socket unless you opt in.
+
+- **`python`** (default) — every call runs in-process, as it always has. The
+  harness never touches the agent socket.
+- **`native`** — every routed call goes to the agent. If the agent is
+  unreachable, the call raises immediately; there is no silent fallback.
+- **`auto`** — routed calls prefer the agent and fall back to the Python path
+  only when the agent is unreachable *before* a request is sent. Once a
+  request is on the wire, `auto` never falls back: a protocol error, a
+  semantic error (bad request, unknown element, timeout), a permission
+  failure, or a mutating call that may have already taken effect all surface
+  as errors instead of silently retrying in Python.
+
+`macos-harness agent start` builds the Swift agent on demand from
+`native/macos-harness-agent/` the first time it is needed (SwiftPM release
+build) and requires the Xcode Command Line Tools; without them, `start` fails
+with a clear "no build toolchain" error instead of hanging or falling back.
+A running agent stores its pidfile and UNIX-domain socket under
+`~/Library/Application Support/macos-harness/` (directory mode `0700`, socket
+mode `0600`) and only accepts connections from the same UID. `start` is
+idempotent, `status` reports whether the agent is running, its pid, version,
+socket path, and whether it is Accessibility-trusted, and `stop` terminates
+it and removes the socket and pidfile. TCC trust is per process: a
+terminal-launched agent inherits the terminal's trust, but `status` can still
+report an untrusted agent, and every AX call the agent makes is re-checked
+agent-side regardless of what the Python process reports.
+
+The agent is opt-in and, once started, authorizes every local client running
+under your same effective UID — not just macos-harness — to open the socket
+and drive the routed Accessibility calls below. That is a high same-UID
+confused-deputy risk: any other process running as you can talk to the agent
+while it is up. The UID check does not recreate per-process TCC and does not
+verify the calling binary's code signature or audit token, so a running agent
+is broad standing access for your user, not a scoped grant tied to
+macos-harness. Run `macos-harness agent stop` when you are done with the
+native backend instead of leaving it running. Full code-signing and
+audit-token XPC authorization that binds trust to the exact calling binary is
+deferred to the signed distribution wave; this release enforces same-UID
+only.
+
+Only a fixed, narrow set of calls ever cross the socket: `list_apps`, the
+bounded `ax.query`/`ax.query_all` search, `ax.press`, and the element
+primitives `ax.get`/`ax.get_attributes`, `ax.set`, and `ax.perform` once you
+already hold an `element_index`. Screenshots, keyboard and pointer input, the
+animated pointer overlay, AppleScript, full app-state snapshots, and any
+unrouted or parameterized AX call stay local to the Python process on every
+backend. An `element_index` returned by a native query is not a raw
+agent-side number — the client interns it into the same monotonic element
+registry local queries use, so `ax.get`/`ax.set`/`ax.perform` accept it
+exactly like a Python-minted index, and a stale index still raises instead of
+silently aliasing a different element.
+
+A future Rust backend would expose this C ABI only (not implemented here):
+`mh_agent_open(const char *socket_path, uint32_t timeout_ms, mh_agent_t **out)`,
+`mh_agent_request(mh_agent_t *, const uint8_t *request, size_t request_len,
+uint8_t **response, size_t *response_len)`, `mh_agent_free_buffer`, and
+`mh_agent_close`. Requests and responses remain UTF-8 NDJSON v1. The caller
+owns response buffers. AX object pointers never cross the ABI. No Rust source
+or build step ships with this slice.
+
 ## How it works
 
 ```text
@@ -128,6 +204,8 @@ CAPTCHA, account recovery, or another check that requires the user.
 - Exposes raw Apple Accessibility and Apple Events when vision is not enough
 - Uses Browser Harness for the real, logged-in browser
 - Keeps ordinary Python and the local filesystem within reach
+- Can hand a fixed set of Accessibility calls to a supervised native agent
+  over a local socket; off by default, see [Native backend](#native-backend)
 
 ## Permissions and privacy
 

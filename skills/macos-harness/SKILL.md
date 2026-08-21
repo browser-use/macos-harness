@@ -135,3 +135,36 @@ activates Chrome or emits a mouse event.
 Run `macos-harness doctor` to inspect permissions without prompting. Run
 `macos-harness doctor --request` only with user approval. Accessibility, screen
 recording, and event posting are global; Apple Events Automation is per target.
+
+## Native backend (optional)
+
+`mac.*` stays fully local unless you opt in. `MACOS_HARNESS_BACKEND` (`python`
+default, `native`, `auto`) or `MacOS(backend=...)` picks the backend; `python`
+never opens a socket, `native` raises immediately if the agent is unreachable
+instead of falling back, and `auto` falls back to Python only when the agent
+is unreachable before a request is sent — never after a protocol, semantic,
+permission, timeout, or mutating error. Manage the agent with
+`macos-harness agent start|status|stop`; `start` builds the Swift agent on
+demand (requires the Xcode Command Line Tools) and fails clearly without
+silently falling back if the toolchain is missing. `status` reports whether
+it is running, its pid/version, and whether it is Accessibility-trusted —
+check that before relying on `native`.
+
+The agent is opt-in and, once running, authorizes every local client under
+your same effective UID — not only macos-harness — to open the socket and
+drive the routed calls below: a high same-UID confused-deputy risk. The UID
+check does not recreate per-process TCC and does not verify the calling
+binary's code signature or audit token, so treat a running agent as broad
+standing access for your user, not a scoped grant. Run
+`macos-harness agent stop` when you are done with the native backend. Full
+code-signing and audit-token XPC authorization tied to the exact calling
+binary is deferred to the signed distribution wave; this release enforces
+same-UID only.
+
+Only `list_apps`, `ax.query`/`ax.query_all`, `ax.press`, and the element
+primitives `ax.get`/`ax.get_attributes`/`ax.set`/`ax.perform` can route to
+the agent. Everything else — screenshots, keyboard/pointer input, the pointer
+overlay, AppleScript, full app snapshots — always stays local. A native
+`element_index` is interned into the same handle registry a local query
+would use, so it behaves exactly like one: stale or reset indices still
+raise instead of aliasing a different element.

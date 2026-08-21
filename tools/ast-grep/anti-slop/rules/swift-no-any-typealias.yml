@@ -1,0 +1,9 @@
+id: anti-slop-swift-no-any-typealias
+language: swift
+severity: error
+message: Typealias resolves to `Any` or `AnyObject`.
+note: Alias a concrete protocol or struct/enum/class instead of erasing to `Any`/`AnyObject`.
+rule:
+  any:
+    - pattern: typealias $NAME = Any
+    - pattern: typealias $NAME = AnyObject

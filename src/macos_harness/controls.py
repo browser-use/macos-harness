@@ -261,14 +261,15 @@ class Accessibility:
         self._host.set(element_index, value, attribute)
 
     def actions(self, element_index: int) -> list[str]:
-        return self._host._actions(self._host._element(element_index))
+        element = self._host._local_element(element_index)
+        return self._host._actions(element)
 
     def perform(self, element_index: int, action: str = "AXPress") -> None:
         self._host.perform_action(element_index, action)
 
     def parameterized(self, element_index: int, attribute: str, parameter: Any) -> Any:
         error, value = AS.AXUIElementCopyParameterizedAttributeValue(
-            self._host._element(element_index), attribute, parameter, None
+            self._host._local_element(element_index), attribute, parameter, None
         )
         if error != 0:
             raise RuntimeError(
@@ -277,7 +278,7 @@ class Accessibility:
         return self._host._jsonable(value)
 
     def raw(self, element_index: int) -> Any:
-        return self._host._element(element_index)
+        return self._host._local_element(element_index)
 
     def dump(self, app: str, **kwargs: Any) -> dict[str, Any]:
         kwargs.setdefault("screenshot", False)

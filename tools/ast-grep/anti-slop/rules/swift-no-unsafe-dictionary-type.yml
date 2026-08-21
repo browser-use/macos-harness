@@ -1,0 +1,33 @@
+id: anti-slop-swift-no-unsafe-dictionary-type
+language: swift
+severity: error
+message: "Untyped dictionary bag (`[String: Any]`, `[String: AnyObject]`, `NSDictionary`, or `Dictionary<String, Any>`)."
+note: Model the shape as a named `struct` or `Codable` type and decode it once at the boundary.
+rule:
+  any:
+    - all:
+        - kind: dictionary_type
+        - has:
+            kind: user_type
+            has:
+              kind: type_identifier
+              regex: '^String$'
+        - has:
+            kind: user_type
+            has:
+              kind: type_identifier
+              regex: '^(Any|AnyObject)$'
+    - kind: type_identifier
+      regex: '^NSDictionary$'
+    - all:
+        - kind: user_type
+        - has:
+            kind: type_identifier
+            regex: '^Dictionary$'
+        - has:
+            kind: type_arguments
+            has:
+              kind: user_type
+              has:
+                kind: type_identifier
+                regex: '^(Any|AnyObject)$'

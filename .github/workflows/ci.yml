@@ -17,4 +17,24 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked
       - run: uv run ruff check .
-      - run: uv run pytest
+      - run: uv run pytest -m "not native"
+
+  swift:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift build
+        working-directory: native/macos-harness-agent
+      - run: swift test
+        working-directory: native/macos-harness-agent
+
+  native:
+    needs: swift
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run pytest -m native
