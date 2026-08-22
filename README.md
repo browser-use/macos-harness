@@ -31,6 +31,97 @@ Install or upgrade macOS Harness from https://github.com/browser-use/macos-harne
 That is it. The agent installs the package, teaches itself the workflow, checks
 permissions, and verifies the connection. [Manual setup](install.md) is available too.
 
+## Machine-first: `mac.do` for mutations, raw primitives underneath
+
+Prefer `mac.do` for anything that changes state. It runs the same primitives
+underneath, but returns a `Receipt` instead of a bare value, so you can tell
+what actually happened instead of trusting it blindly:
+
+```bash
+macos-harness <<'PY'
+from macos_harness.receipts import OperationError, gone
+
+not_now = dict(text="Not Now", role="button", all_apps=True)
+postcondition = gone(**not_now)
+
+receipt = mac.do.press(**not_now, postcondition=postcondition, once="dismiss-not-now")
+print(receipt.outcome, receipt.acted, receipt.verified)  # done yes True
+
+# A repeat call with the same `once` token *and* the same request (reusing
+# `not_now`/`postcondition` guarantees that here) replays the recorded
+# receipt instead of risking a second press.
+replay = mac.do.press(**not_now, postcondition=postcondition, once="dismiss-not-now")
+assert replay.replayed
+
+# A dry run validates and resolves without ever dispatching anything or
+# touching the once-token ledger.
+plan = mac.do.press(**not_now, dry_run=True)
+assert plan.outcome == "planned" and plan.acted == "no"
+
+# A failed operation raises OperationError, never a bare exception --
+# exc.receipt is the exact same Receipt a success would have returned.
+try:
+    mac.do.press(text="Does Not Exist", role="button", all_apps=True, timeout=1)
+except OperationError as exc:
+    print(exc.receipt.outcome, exc.receipt.error["code"])  # failed timeout
+PY
+```
+
+- `press`, `set`, `toggle`, `run`, and `key` mutate; `recall(once)` looks up
+  a past receipt by its token, without dispatching anything. `set`/`toggle`
+  are convergent: they read the current state first and report
+  `outcome="already"` instead of touching anything already correct.
+- Every call returns an immutable, JSON-safe `Receipt` on success, or
+  raises `OperationError` on failure — `exc.receipt` is the exact same
+  `Receipt` a success would have had, so you never have to choose between
+  catching the exception and reading the structured detail: `outcome`
+  (`planned`, `done`, `already`, `failed`), `acted` (`no`, `yes`,
+  `unknown`), the backend and executor that actually ran it, the
+  normalized request and target, whether anything changed, whether a
+  postcondition verified the effect, duration_s, and — on failure — a
+  structured error. `receipt.to_json()` is ready for `json.dumps`.
+- `changed` is only ever an observed fact, never a guess. `set`/`toggle`
+  read the target back before and after and know for certain; `press`/
+  `run`/`key` have no readback of their own, so `changed` is `None` unless
+  you pass a `postcondition` that confirms the effect actually took hold.
+- A bad argument — an unknown role, a malformed postcondition, reusing a
+  `once` token for a genuinely different request — raises `MacOSError`
+  directly, before anything is dispatched: there is no receipt, because
+  nothing was ever attempted. Once a mutating call actually begins, every
+  failure comes back as a `Receipt`, raised inside `OperationError`.
+- `present(...)`/`gone(...)` (the same call shape as `mac.ax.wait`/
+  `mac.ax.wait_gone`) verify an operation's real effect; left unscoped, a
+  postcondition inherits the operation's own `app`/`apps`/`all_apps` scope
+  — except for `run`, which has no scope of its own, so its postcondition
+  must set `app=`, `all_apps=True`, or `apps=` explicitly. `press`/`set`/
+  `toggle` accept an `interval` for their own AX resolution polling;
+  `run` and `key` poll for nothing of their own, so neither takes one.
+- `timeout` is one cooperative budget across resolution, dispatch, and
+  verification. The harness does not start a mutation after the budget
+  expires and it terminates a timed-out script process group. A synchronous
+  macOS Accessibility or input call that is already in progress cannot be
+  preempted safely and can return after the budget.
+- `press`, `run`, and `key` accept a nonempty `once` keyword for
+  at-most-once dispatch. The ledger lives only in the memory of the one
+  live `MacOS` instance that dispatched the call — a crash, a fresh
+  `MacOS()`, or a new process all start with an empty ledger — and it
+  keeps every finished receipt only for as long as that instance does,
+  never on disk and never shared with another process. A repeat call with
+  the same token *and* the same request replays the recorded receipt
+  instead of dispatching again; an interrupted or still in-flight attempt
+  fails closed with a failed, `acted="unknown"` receipt rather than
+  risking a second dispatch. `set`/`toggle` never need one -- reading
+  before mutating already makes them safe to repeat.
+- A `Receipt` stays safe to keep or log by default. Script source and
+  arguments, `set`/`toggle` values, and script output use length and SHA-256
+  metadata instead of raw values. Pass `capture_output=True` only when you
+  need bounded stdout/stderr text and accept that it can contain sensitive
+  data.
+
+When no `mac.do` verb fits, drop to the six raw primitives below — an escape
+hatch, not a deprecated path: unchanged, fully supported, just without a
+receipt or an idempotency token.
+
 ## Six primitives. The whole Mac.
 
 ```bash
@@ -212,6 +303,8 @@ silently aliasing a different element.
 - Exposes raw Apple Accessibility and Apple Events when vision is not enough
 - Uses Browser Harness for the real, logged-in browser
 - Keeps ordinary Python and the local filesystem within reach
+- Wraps mutations in `mac.do` for a receipt, optional verification, and
+  idempotency — see [Machine-first](#machine-first-macdo-for-mutations-raw-primitives-underneath)
 - Can hand a fixed set of Accessibility calls to a supervised native agent
   over a local socket; off by default, see [Native backend](#native-backend)
 
@@ -220,13 +313,26 @@ silently aliasing a different element.
 `macos-harness doctor` reports the macOS permissions actually needed. The harness
 never activates or raises a target app and never moves the physical pointer.
 
-Anonymous telemetry is enabled by default. It records only the CLI command
-category, success, duration, package version, OS/architecture, and detected agent
-client. It never records prompts, app names, screenshots, UI text, scripts, paths,
-or window titles.
+Telemetry is off by default. Nothing is sent until you run `macos-harness
+telemetry enable`, and a kill switch always wins even after that:
+`DO_NOT_TRACK=1`, `MACOS_HARNESS_TELEMETRY=0`, or `ANONYMIZED_TELEMETRY=0`
+disables it regardless of the stored setting, and no environment variable can
+force it back on. Once enabled, each CLI invocation sends one event carrying
+a persistent random install ID (generated locally, not derived from any
+hardware or user identifier) plus the command category, success, duration,
+package version, Python `major.minor`, OS, CPU architecture, and detected
+coding-agent client (Codex, Claude Code, Cursor, Gemini CLI, or opencode). It
+never carries prompts, app names, screenshots, UI text, scripts, paths, or
+window titles. Config lives at `$MACOS_HARNESS_HOME/telemetry.json` (default
+`~/Library/Application Support/macos-harness/telemetry.json`, mode `0600`);
+events go to PostHog EU (`https://eu.i.posthog.com`), and an endpoint
+override is honored only when it is HTTPS.
 
 ```bash
-macos-harness telemetry disable
+macos-harness telemetry enable    # opt in
+macos-harness telemetry status    # see exactly what would be sent, and where
+macos-harness telemetry disable   # opt back out
 ```
 
-Experimental. macOS only. [MIT licensed](LICENSE).
+Experimental. Requires macOS 13+ and Python 3.11 or newer (tested
+3.11-3.14). [MIT licensed](LICENSE).

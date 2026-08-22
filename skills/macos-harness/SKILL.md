@@ -34,6 +34,61 @@ programs; reserve `macos-harness repl` for manual exploration and always exit it
   or one exact API/AX query for semantic state; use both only when they prove
   different things.
 
+## Prefer `mac.do` for mutations
+
+For anything that changes state, try a `mac.do` verb before its raw-primitive
+equivalent. It performs the same underlying action but returns a `Receipt` on
+success -- `outcome` (`planned`/`done`/`already`/`failed`), `acted`
+(`no`/`yes`/`unknown`), whether anything changed, and whether a postcondition
+verified the effect -- instead of a bare value you have to trust blindly:
+
+```python
+from macos_harness.receipts import gone
+
+not_now = dict(text="Not Now", role="button", all_apps=True)
+receipt = mac.do.press(
+    **not_now, postcondition=gone(**not_now), once="dismiss-not-now",
+)
+```
+
+- `press`, `set`, `toggle`, `run`, and `key` mutate; `recall(once)` looks up
+  a past receipt by its token without dispatching anything. `set`/`toggle`
+  are convergent -- they check first and report `outcome="already"` instead
+  of re-mutating a target already in the requested state, so neither takes
+  a `once` token.
+- A call either returns a `Receipt`, or raises `OperationError` -- catch it
+  and read `exc.receipt` for the same structured detail a success would
+  have had (`.outcome`, `.acted`, `.error["code"]`). A bad argument (an
+  unknown role, a reused `once` token for a different request) instead
+  raises `MacOSError` directly, before anything is dispatched, with no
+  receipt at all -- nothing was ever attempted.
+- `changed` is an observed fact, not a guess: `set`/`toggle` read the
+  target back and know for certain; `press`/`run`/`key` have no readback
+  of their own, so `changed` is `None` unless a `postcondition` confirms
+  the effect.
+- Pass a nonempty `once` keyword on `press`/`run`/`key` before an action you
+  cannot safely repeat, with the *same* request every time you reuse a
+  token. Its ledger lives only in the memory of the one live `MacOS`
+  instance that dispatched it -- gone on a crash, a fresh `MacOS()`, or a
+  new process -- and never written to disk. A retried call with the same
+  token and request replays the recorded receipt; an interrupted attempt
+  fails closed instead of risking a second dispatch.
+- Pass `dry_run=True` to validate and resolve (and, for `run`, compile)
+  without ever dispatching, when you need to confirm a target exists before
+  committing to the action. `press`/`set`/`toggle` take an `interval` for
+  their own AX polling; `run` and `key` do not poll, so neither takes one.
+- `timeout` is a cooperative budget. No mutation starts after it expires,
+  polling and script process groups are bounded by it, but a synchronous
+  macOS AX/input call already in progress cannot be preempted safely.
+- `run` receipts keep source, arguments, and output as length/SHA-256
+  metadata by default. Pass `capture_output=True` only when you need bounded
+  stdout/stderr text and accept that it can contain sensitive data.
+
+Drop to the matching raw primitive only when no `mac.do` verb covers what
+you need: identity-only lookups, reads, or an action `mac.do` does not
+model. Raw primitives are unchanged and fully supported, just without a
+receipt or an idempotency guarantee.
+
 ## Use the small surface
 
 Think in six verbs: `see`, `key`, `type`, `click`, `ax`, `script`.
@@ -92,6 +147,9 @@ CAPTCHA, account recovery, or another check that requires the user.
 
 ## Choose the lowest useful mode
 
+0. For a mutation, try a `mac.do` verb (`press`, `set`, `toggle`, `run`,
+   `key`) before its raw-primitive equivalent -- it verifies the effect and
+   can be retried safely with a `once` token.
 1. When identity depends on local context (`my`, `friend`, or prior activity),
    inspect that context and correlate stable fields; a loose text hit is not enough.
 2. Use `mac.script()` for a known exact, focus-safe app command.

@@ -81,6 +81,29 @@ else:
 """
 
 
+# A second driver, run the same way, that calls `NativeAgentTagHook.initialize()`
+# itself -- the real entry point hatchling invokes for every build, including an
+# editable one -- rather than the lower-level helpers `_HOOK_DRIVER` exercises
+# directly. `version` is hatchling's own "standard"/"editable" build_data
+# version string. Prints "ok <pure_python> <tag>" (the resulting build_data)
+# or "rejected <message>".
+_INITIALIZE_DRIVER = """
+import importlib.util, sys
+from pathlib import Path
+hook_path, root, version = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("hatch_build", hook_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+hook = module.NativeAgentTagHook(root, {}, None, None, root, "wheel")
+build_data = {"pure_python": True, "tag": "py3-none-any"}
+try:
+    hook.initialize(version, build_data)
+    print("ok", build_data["pure_python"], build_data["tag"])
+except module.BundledAgentValidationError as exc:
+    print("rejected", exc)
+"""
+
+
 def _build_fixture_binary(dest: Path, *, deployment_target: str, archs: Sequence[str]) -> None:
     """Builds a tiny real Mach-O executable for the given architectures and
     deployment target, then ad-hoc signs it -- enough for lipo/otool/codesign
@@ -161,6 +184,36 @@ def _hook_rejection(binary: Path, *, fake_platform: str = "", fake_otool_output:
     status, payload = _run_hook_driver(binary, fake_platform=fake_platform, fake_otool_output=fake_otool_output)
     assert status == "rejected", f"expected a rejection, got status={status!r} payload={payload!r}"
     return payload
+
+
+def _run_initialize_driver(*, version: str) -> tuple[str, str]:
+    """Runs the real `NativeAgentTagHook.initialize(version, build_data)`
+    -- hatchling's actual per-build entry point -- against whatever
+    currently sits at the real bundled agent path (place it first with
+    `_bundled_agent_binary`) and returns (status, payload): status is "ok"
+    (payload is "<pure_python> <tag>", the resulting build_data) or
+    "rejected" (payload is the BundledAgentValidationError message)."""
+    process = subprocess.run(
+        [
+            "uv",
+            "run",
+            "--with",
+            "hatchling",
+            "--no-project",
+            "python3",
+            "-c",
+            _INITIALIZE_DRIVER,
+            str(HOOK_PATH),
+            str(REPO_ROOT),
+            version,
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    status, _, payload = process.stdout.strip().partition(" ")
+    return status, payload
 
 
 @contextlib.contextmanager
@@ -273,6 +326,45 @@ def test_hook_rejects_wrong_permission_mode(tmp_path: Path) -> None:
     binary.chmod(0o644)
 
     assert "0o755" in _hook_rejection(binary)
+
+
+def test_hook_parses_three_component_minos_using_major_minor_and_drops_the_patch(tmp_path: Path) -> None:
+    """A genuine three-component minos (major.minor.patch, e.g. clang's own
+    `-mmacosx-version-min=13.0.1`) is valid input, not a parse failure --
+    the hook must derive the wheel tag from major.minor alone."""
+    binary = tmp_path / "macos-harness-agent"
+    _build_fixture_binary(binary, deployment_target="13.0.1", archs=("arm64", "x86_64"))
+
+    assert _hook_tag(binary) == "13_0"
+
+
+def test_hook_skips_validation_entirely_for_editable_wheel_version(tmp_path: Path) -> None:
+    """`pip install -e .`/`uv pip install -e .` must never validate or tag
+    against whatever binary happens to sit at the bundled path -- a broken
+    or single-arch binary left over from local development must never fail
+    an editable install the way it must fail a real release build."""
+    fixture = tmp_path / "macos-harness-agent"
+    _build_fixture_binary(fixture, deployment_target="13.0", archs=("arm64",))  # invalid: single-arch
+
+    with _bundled_agent_binary(fixture):
+        status, payload = _run_initialize_driver(version="editable")
+
+    assert status == "ok", f"expected editable to skip validation, got status={status!r} payload={payload!r}"
+    assert payload == "True py3-none-any", "editable build_data must be left completely untouched"
+
+
+def test_hook_still_fails_closed_for_the_standard_wheel_version(tmp_path: Path) -> None:
+    """The same invalid binary that an editable build must skip still fails
+    a standard (non-editable) wheel build -- editable is the only version
+    this hook ever skips."""
+    fixture = tmp_path / "macos-harness-agent"
+    _build_fixture_binary(fixture, deployment_target="13.0", archs=("arm64",))
+
+    with _bundled_agent_binary(fixture):
+        status, payload = _run_initialize_driver(version="standard")
+
+    assert status == "rejected", f"expected the standard version to fail closed, got status={status!r}"
+    assert "arm64" in payload and "x86_64" in payload
 
 
 def test_hook_rejects_broken_signature(tmp_path: Path) -> None:
@@ -388,3 +480,23 @@ def test_sdist_stays_pure_source_even_with_bundled_binary(tmp_path: Path) -> Non
         names = archive.getnames()
         assert not any(name.endswith(AGENT_MEMBER) for name in names)
         assert any(name.endswith("native/macos-harness-agent/Package.swift") for name in names)
+
+
+def test_wheel_ships_py_typed_marker(tmp_path: Path) -> None:
+    """PEP 561: a typed package ships an empty `py.typed` marker inside the
+    installed package directory, so type checkers trust its own
+    annotations instead of treating the package as untyped."""
+    _sdist_path, wheel_path = _build_release_dists(tmp_path / "dist")
+
+    with zipfile.ZipFile(wheel_path) as archive:
+        member = "macos_harness/py.typed"
+        assert member in archive.namelist()
+        assert archive.read(member) == b""
+
+
+def test_sdist_ships_py_typed_marker(tmp_path: Path) -> None:
+    sdist_path, _wheel_path = _build_release_dists(tmp_path / "dist")
+
+    with tarfile.open(sdist_path) as archive:
+        names = archive.getnames()
+        assert any(name.endswith("src/macos_harness/py.typed") for name in names)

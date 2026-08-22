@@ -54,7 +54,13 @@ class _WheelBuildData(TypedDict, total=False):
 
 class NativeAgentTagHook(BuildHookInterface):
     def initialize(self, version: str, build_data: _WheelBuildData) -> None:
-        if self.target_name != "wheel":
+        if self.target_name != "wheel" or version == "editable":
+            # `version == "editable"` is `pip install -e .`/`uv pip install
+            # -e .`: never validate or tag against whatever binary happens
+            # to sit at the bundled path on this machine -- a stale or
+            # single-arch binary left over from local `swift build` must
+            # never fail an editable install the way it must fail a real
+            # release build.
             return
 
         binary = Path(self.root) / _AGENT_RELATIVE_PATH
@@ -111,11 +117,17 @@ def _validate_bundled_universal2(binary: Path) -> str:
 
 def _max_minos_version(load_commands: str, binary: Path) -> str:
     """Parses every `minos` (LC_BUILD_VERSION) line out of `otool -l` output
-    and returns the highest "<major>_<minor>" found. Both slices share one
-    deployment target in practice; take the max so a future mismatch can
-    never advertise a floor lower than either slice actually requires.
-    Raises BundledAgentValidationError if a minos value fails to parse, or
-    if the binary has no minos load command at all.
+    and returns the highest "<major>_<minor>" found. A `minos` value may
+    carry one, two, or three dot-separated components
+    (``"13"``/``"13.0"``/``"13.0.1"``, matching what a real
+    ``-mmacosx-version-min`` deployment target produces); only the leading
+    major/minor pair ever matters for a wheel tag, so a present patch
+    component is parsed and then dropped rather than rejected as
+    unparseable. Both architecture slices share one deployment target in
+    practice; take the max so a future mismatch can never advertise a
+    floor lower than either slice actually requires. Raises
+    BundledAgentValidationError if a minos value fails to parse, or if the
+    binary has no minos load command at all.
     """
     versions: list[tuple[int, int]] = []
     for line in load_commands.splitlines():
@@ -123,10 +135,12 @@ def _max_minos_version(load_commands: str, binary: Path) -> str:
         if not stripped.startswith("minos "):
             continue
         raw = stripped.split(maxsplit=1)[1]
-        major_digits, _, minor_digits = raw.partition(".")
-        if not major_digits.isdigit() or not (minor_digits == "" or minor_digits.isdigit()):
+        components = raw.split(".")
+        if len(components) > 3 or not all(component.isdigit() for component in components):
             raise BundledAgentValidationError(f"{binary} has an unparseable minos version: {raw!r}")
-        versions.append((int(major_digits), int(minor_digits or 0)))
+        major = int(components[0])
+        minor = int(components[1]) if len(components) > 1 else 0
+        versions.append((major, minor))
     if not versions:
         raise BundledAgentValidationError(f"{binary} has no `minos` (LC_BUILD_VERSION) load command")
 

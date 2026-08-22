@@ -1,5 +1,8 @@
 # Install macOS Harness
 
+Requires macOS 13+ and Python 3.11 or newer (tested 3.11-3.14); `uv`
+manages the interpreter for you.
+
 ## Let your agent do it
 
 Paste this into Codex or Claude Code:
@@ -28,10 +31,13 @@ print(mac.see("Finder"))
 PY
 ```
 
-Anonymous telemetry contains only the CLI command category, success, duration,
-package version, OS/architecture, and detected agent client. It never includes
+Telemetry is off by default; nothing is sent until you opt in. Enabling it
+sends one event per CLI invocation carrying a persistent random install ID,
+the command category, success, duration, package version, Python
+`major.minor`, OS, CPU architecture, and detected agent client -- never
 prompts, app names, screenshots, text, scripts, paths, or window titles.
 
 ```bash
-macos-harness telemetry disable
+macos-harness telemetry enable    # opt in
+macos-harness telemetry status    # see exactly what would be sent, and where
 ```

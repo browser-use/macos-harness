@@ -1,0 +1,2 @@
+# Public PostHog project capture key, not a credential.
+38d81937a8a079f4bed208649e98aff2fb109a63:src/macos_harness/telemetry.py:generic-api-key:14
