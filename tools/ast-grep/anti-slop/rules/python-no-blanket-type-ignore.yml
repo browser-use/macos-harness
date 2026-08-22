@@ -1,0 +1,10 @@
+id: anti-slop-python-no-blanket-type-ignore
+language: python
+severity: error
+message: "Blanket `# type: ignore` suppresses every error on the line, not just the one being silenced."
+note: "Add the specific error code, e.g. `# type: ignore[assignment]`."
+rule:
+  kind: comment
+  all:
+    - regex: '#\s*type:\s*ignore'
+    - not: { regex: '#\s*type:\s*ignore\s*\[' }

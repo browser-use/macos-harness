@@ -1,9 +1,12 @@
 .venv/
 .pytest_cache/
+.engram/
 __pycache__/
 *.py[cod]
 dist/
 tmp/
+native/**/.build/
+src/macos_harness/bin/
 
 # Local task artifacts can contain private workspace data.
 slack-*.json

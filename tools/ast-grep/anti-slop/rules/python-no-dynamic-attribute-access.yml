@@ -1,0 +1,16 @@
+id: anti-slop-python-no-dynamic-attribute-access
+language: python
+severity: error
+message: Attribute name is a string literal, so this reflection can be a declared attribute access instead.
+note: Replace getattr(obj, "name")/setattr(obj, "name", v)/obj.__dict__["name"] with obj.name (or obj.name = v).
+rule:
+  any:
+    - all:
+        - kind: call
+        - has: { field: function, regex: '^getattr$' }
+        - has: { field: arguments, has: { kind: string, nthChild: 2 } }
+    - all:
+        - kind: call
+        - has: { field: function, regex: '^setattr$' }
+        - has: { field: arguments, has: { kind: string, nthChild: 2 } }
+    - pattern: $OBJ.__dict__[$KEY]

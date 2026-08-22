@@ -1,4 +1,4 @@
-"""Tiny, privacy-safe, opt-out telemetry for macOS Harness."""
+"""Tiny, privacy-safe, opt-in telemetry for macOS Harness."""
 
 from __future__ import annotations
 
@@ -8,8 +8,9 @@ import platform
 import subprocess
 import sys
 import uuid
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+
+from ._version import __version__
 
 POSTHOG_KEY = "phc_nud39qe8UBkoFaMM2RwQ8LPWbWDNQNdPUeGShNTCHVXv"
 POSTHOG_HOST = "https://eu.i.posthog.com"
@@ -19,6 +20,13 @@ DISABLE_ENVS = (
     "DO_NOT_TRACK",
 )
 COMMANDS = {"python", "doctor", "apps", "repl", "skill", "see", "state"}
+
+#: In-process test seam for `_endpoint()`. Never read from the
+#: environment: production code never assigns this, and no environment
+#: variable -- in this process or any other -- can change it. A test sets
+#: it directly with `monkeypatch.setattr(telemetry, "_endpoint_override",
+#: "http://127.0.0.1:PORT")` to point `_send()` at a local mock server.
+_endpoint_override: str | None = None
 
 
 def _config_dir() -> Path:
@@ -53,6 +61,10 @@ def _save(config: dict) -> None:
 
 
 def _env_disabled() -> bool:
+    """True if a kill-switch env var forces telemetry off. These can only
+    push the effective state toward disabled; none of them can enable
+    telemetry -- that requires the explicit `macos-harness telemetry
+    enable` command."""
     false = {"0", "false", "no", "off"}
     for name in DISABLE_ENVS:
         value = (os.environ.get(name) or "").lower()
@@ -78,34 +90,48 @@ def _install_id(config: dict | None = None, *, create: bool = True) -> str | Non
 
 
 def is_enabled() -> bool:
-    return not _env_disabled() and not bool(_load().get("disabled"))
+    """False until `macos-harness telemetry enable` has run, and always
+    false while a kill-switch env var is set: a fresh install sends
+    nothing."""
+    return not _env_disabled() and bool(_load().get("enabled"))
+
+
+def _endpoint() -> str:
+    """Resolve the ingestion host. `_endpoint_override` is an in-process
+    test seam only -- never read from the environment -- so no environment
+    variable, in this process or any other, can redirect telemetry
+    anywhere; a test sets it directly (`monkeypatch.setattr(telemetry,
+    "_endpoint_override", ...)`) to point at a loopback mock server. The
+    production override `MACOS_HARNESS_POSTHOG_HOST` is honored only when
+    it is an HTTPS URL; any other value is ignored in favor of the built-in
+    default, so no environment variable can silently redirect real
+    telemetry to an unencrypted or unintended endpoint."""
+    if _endpoint_override is not None:
+        return _endpoint_override.rstrip("/")
+    host = os.environ.get("MACOS_HARNESS_POSTHOG_HOST", POSTHOG_HOST).rstrip("/")
+    return host if host.startswith("https://") else POSTHOG_HOST
 
 
 def status() -> dict:
     config = _load()
     env_disabled = _env_disabled()
-    enabled = not env_disabled and not bool(config.get("disabled"))
+    enabled_by_config = bool(config.get("enabled"))
+    enabled = not env_disabled and enabled_by_config
     return {
         "enabled": enabled,
         "disabled_by_env": env_disabled,
-        "disabled_by_config": bool(config.get("disabled")),
+        "enabled_by_config": enabled_by_config,
         "install_id": _install_id(config, create=enabled),
         "config_path": str(_config_path()),
+        "endpoint": _endpoint(),
     }
 
 
 def set_enabled(enabled: bool) -> dict:
     config = _load()
-    config["disabled"] = not enabled
+    config["enabled"] = enabled
     _save(config)
     return status()
-
-
-def _version() -> str:
-    try:
-        return version("macos-harness")
-    except PackageNotFoundError:
-        return "unknown"
 
 
 def _agent() -> str | None:
@@ -136,9 +162,8 @@ except Exception:
 
 
 def _send(payload: dict) -> None:
-    host = os.environ.get("MACOS_HARNESS_POSTHOG_HOST", POSTHOG_HOST).rstrip("/")
     job = {
-        "url": f"{host}/i/v0/e/",
+        "url": f"{_endpoint()}/i/v0/e/",
         "timeout": float(os.environ.get("MACOS_HARNESS_TELEMETRY_TIMEOUT", "5")),
         "payload": payload,
     }
@@ -169,7 +194,7 @@ def capture_cli(command: str | None, success: bool, duration_seconds: float) -> 
                 "command": command if command in COMMANDS else "python",
                 "success": success,
                 "duration_seconds": round(max(duration_seconds, 0), 2),
-                "macos_harness_version": _version(),
+                "macos_harness_version": __version__,
                 "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
                 "os": platform.system() or "unknown",
                 "machine": platform.machine() or "unknown",

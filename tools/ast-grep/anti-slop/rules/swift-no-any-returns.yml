@@ -1,0 +1,29 @@
+id: anti-slop-swift-no-any-returns
+language: swift
+severity: error
+message: Function returns `Any`, `AnyObject`, `[Any]`, or `Any?`.
+note: Return a concrete protocol or type. Callers should not have to downcast the result.
+rule:
+  any:
+    - kind: user_type
+      inside:
+        kind: function_declaration
+      has:
+        kind: type_identifier
+        regex: '^(Any|AnyObject)$'
+    - kind: array_type
+      inside:
+        kind: function_declaration
+      has:
+        kind: user_type
+        has:
+          kind: type_identifier
+          regex: '^Any$'
+    - kind: optional_type
+      inside:
+        kind: function_declaration
+      has:
+        kind: user_type
+        has:
+          kind: type_identifier
+          regex: '^Any$'

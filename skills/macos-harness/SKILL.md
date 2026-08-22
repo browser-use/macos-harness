@@ -34,6 +34,61 @@ programs; reserve `macos-harness repl` for manual exploration and always exit it
   or one exact API/AX query for semantic state; use both only when they prove
   different things.
 
+## Prefer `mac.do` for mutations
+
+For anything that changes state, try a `mac.do` verb before its raw-primitive
+equivalent. It performs the same underlying action but returns a `Receipt` on
+success -- `outcome` (`planned`/`done`/`already`/`failed`), `acted`
+(`no`/`yes`/`unknown`), whether anything changed, and whether a postcondition
+verified the effect -- instead of a bare value you have to trust blindly:
+
+```python
+from macos_harness.receipts import gone
+
+not_now = dict(text="Not Now", role="button", all_apps=True)
+receipt = mac.do.press(
+    **not_now, postcondition=gone(**not_now), once="dismiss-not-now",
+)
+```
+
+- `press`, `set`, `toggle`, `run`, and `key` mutate; `recall(once)` looks up
+  a past receipt by its token without dispatching anything. `set`/`toggle`
+  are convergent -- they check first and report `outcome="already"` instead
+  of re-mutating a target already in the requested state, so neither takes
+  a `once` token.
+- A call either returns a `Receipt`, or raises `OperationError` -- catch it
+  and read `exc.receipt` for the same structured detail a success would
+  have had (`.outcome`, `.acted`, `.error["code"]`). A bad argument (an
+  unknown role, a reused `once` token for a different request) instead
+  raises `MacOSError` directly, before anything is dispatched, with no
+  receipt at all -- nothing was ever attempted.
+- `changed` is an observed fact, not a guess: `set`/`toggle` read the
+  target back and know for certain; `press`/`run`/`key` have no readback
+  of their own, so `changed` is `None` unless a `postcondition` confirms
+  the effect.
+- Pass a nonempty `once` keyword on `press`/`run`/`key` before an action you
+  cannot safely repeat, with the *same* request every time you reuse a
+  token. Its ledger lives only in the memory of the one live `MacOS`
+  instance that dispatched it -- gone on a crash, a fresh `MacOS()`, or a
+  new process -- and never written to disk. A retried call with the same
+  token and request replays the recorded receipt; an interrupted attempt
+  fails closed instead of risking a second dispatch.
+- Pass `dry_run=True` to validate and resolve (and, for `run`, compile)
+  without ever dispatching, when you need to confirm a target exists before
+  committing to the action. `press`/`set`/`toggle` take an `interval` for
+  their own AX polling; `run` and `key` do not poll, so neither takes one.
+- `timeout` is a cooperative budget. No mutation starts after it expires,
+  polling and script process groups are bounded by it, but a synchronous
+  macOS AX/input call already in progress cannot be preempted safely.
+- `run` receipts keep source, arguments, and output as length/SHA-256
+  metadata by default. Pass `capture_output=True` only when you need bounded
+  stdout/stderr text and accept that it can contain sensitive data.
+
+Drop to the matching raw primitive only when no `mac.do` verb covers what
+you need: identity-only lookups, reads, or an action `mac.do` does not
+model. Raw primitives are unchanged and fully supported, just without a
+receipt or an idempotency guarantee.
+
 ## Use the small surface
 
 Think in six verbs: `see`, `key`, `type`, `click`, `ax`, `script`.
@@ -53,8 +108,48 @@ mac.script('tell application "Spotify" to play')
 Use ordinary Python for local context and one-off logic. Do not add app-specific
 helpers when a short program can resolve the task.
 
+`mac.ax` also covers background AutoFill sheets and system popovers outside
+the app you already target:
+
+```python
+mac.ax.press("Not Now", role="button", all_apps=True)
+```
+
+`query`, `query_all`, `wait`, `wait_gone`, and `press` accept search text as
+the first positional argument. Use `role=` for common targets: `any`, `button`,
+`checkbox`, `combo box`, `image`, `link`, `list`, `menu`, `menu item`,
+`radio button`, `static text`, `table`, `text area`, and `text field`. An
+unknown role raises `MacOSError`. Do not pass both `role` and `search_key`.
+
+Use `apps=` to limit a cross-process search. Pass one app name, bundle ID,
+path, or PID, or pass an iterable of selectors. Duplicate PIDs are removed.
+`apps="Safari"` is one selector, not an iterable of characters. An empty
+iterable raises instead of widening the search.
+
+`query_all` searches every running app or the set named in `apps`. It applies
+one positive global `limit`, times out each process, and returns owner metadata.
+A broad search skips inaccessible processes. A scoped search reports target
+failures. Element handles remain valid until the next AX snapshot or search.
+
+Cross-process calls require non-empty search text. Default attributes exclude
+`AXValue`; reading a value requires a separate `ax.get` or explicit attributes.
+
+`wait` accepts exactly one scope: `app`, `all_apps=True`, or `apps`. Zero
+matches keep polling. Multiple matches fail closed and report owner, role, and
+title details. `wait_gone` requires two consecutive empty polls; a named app
+that exits counts as gone. `press` waits for one match, requires `AXPress`, and
+returns the match. It never requests activation. If the target makes itself
+frontmost, `press` raises `FocusChangedError`; it cannot undo that focus change.
+
+These operations act only on accessible UI that macOS already rendered. They
+cannot make secure UI appear in an inactive app or bypass Touch ID, passkeys,
+CAPTCHA, account recovery, or another check that requires the user.
+
 ## Choose the lowest useful mode
 
+0. For a mutation, try a `mac.do` verb (`press`, `set`, `toggle`, `run`,
+   `key`) before its raw-primitive equivalent -- it verifies the effect and
+   can be retried safely with a `once` token.
 1. When identity depends on local context (`my`, `friend`, or prior activity),
    inspect that context and correlate stable fields; a loose text hit is not enough.
 2. Use `mac.script()` for a known exact, focus-safe app command.
@@ -77,12 +172,16 @@ repeated keys, clicks, deletion loops, or bulk input.
 - `mac.move()` moves only that pointer; it cannot produce native hover.
 - Inactive apps may reject raw clicks. After one verified failure, switch mode.
 - Never launch a closed app or use a custom URL scheme when focus is forbidden.
+- `mac.ax.query_all/wait/press/wait_gone` never bypass Touch ID, passkeys,
+  CAPTCHA, account recovery, or other checks that need the real user present.
 - Screenshot coordinates come from the latest `mac.see()` and preserve window
   bounds and Retina scaling.
 
 Secondary primitives are `mac.move`, `drag`, `scroll`, `show_pointer`, and
 `hide_pointer`. `mac.ax.query()` returns compact matches and bounds fallback
-traversal; lower `max_nodes` for especially large apps.
+traversal; lower `max_nodes` for especially large apps. `mac.ax.query_all()`,
+`.wait()`, `.press()`, and `.wait_gone()` extend that traversal across every
+running process for background AutoFill and system popovers.
 
 ## Browser and permissions
 
@@ -94,3 +193,43 @@ activates Chrome or emits a mouse event.
 Run `macos-harness doctor` to inspect permissions without prompting. Run
 `macos-harness doctor --request` only with user approval. Accessibility, screen
 recording, and event posting are global; Apple Events Automation is per target.
+
+## Native backend (optional)
+
+`mac.*` stays fully local unless you opt in. `MACOS_HARNESS_BACKEND` (`python`
+default, `native`, `auto`) or `MacOS(backend=...)` picks the backend;
+`python` never launches an agent, `native` raises immediately if the agent
+is unreachable instead of falling back, and `auto` falls back to Python only
+when the agent is unreachable before a real `ping` response comes back —
+never after a protocol, semantic, permission, timeout, or mutating error.
+
+Native is process isolation, not a speed mode — default `python` remains
+the latency-recommended choice. Measured on an M4 Pro: a 50-query Finder
+benchmark found a Python median of 1.75 ms against a native steady-state
+median of 2.07 ms, plus ~240 ms of native cold-launch cost on first use.
+Results are workload-specific; measure locally with `bench/ax_smoke.py`.
+
+Each `MacOS(backend="native"/"auto")` instance that dispatches a routed call
+launches its own private `macos-harness-agent` child process over an
+inherited, validated UNIX-domain socket pair only that instance holds either
+end of — no shared daemon, no well-known socket path, nothing for another
+process to discover or connect to. The harness verifies the child's actual
+PID from its first `ping` response. Executable resolution order: an
+explicit `MACOS_HARNESS_AGENT_BIN` path (must exist and be executable, or
+the launch fails immediately with no fallback), then the binary bundled
+with the installed package, then a fresh local SwiftPM release build
+(requires the Xcode Command Line Tools; rebuilt only when missing or stale,
+and only at this tier). Call `mac.close()` when done, or use
+`with MacOS(backend=...) as mac:` — both stop the child process and close
+the socket; `close()` is idempotent and safe even on a `python`-backend
+instance. A closed instance raises `MacOSError` on further native-routed
+calls instead of relaunching; construct a new `MacOS()` to use `native`/
+`auto` again.
+
+Only `list_apps`, `ax.query`/`ax.query_all`, `ax.press`, and the element
+primitives `ax.get`/`ax.get_attributes`/`ax.set`/`ax.perform` can route to
+the agent. Everything else — screenshots, keyboard/pointer input, the pointer
+overlay, AppleScript, full app snapshots — always stays local. A native
+`element_index` is interned into the same handle registry a local query
+would use, so it behaves exactly like one: stale or reset indices still
+raise instead of aliasing a different element.

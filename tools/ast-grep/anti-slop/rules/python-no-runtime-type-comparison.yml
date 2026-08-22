@@ -1,0 +1,11 @@
+id: anti-slop-python-no-runtime-type-comparison
+language: python
+severity: error
+message: Comparing type(x) against a class bypasses subclassing and structural typing.
+note: Use isinstance() for a single boundary check, or a Protocol/typed contract for dispatch.
+rule:
+  any:
+    - pattern: type($X) == $T
+    - pattern: type($X) is $T
+    - pattern: $T == type($X)
+    - pattern: $T is type($X)

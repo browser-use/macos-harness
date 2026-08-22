@@ -1,0 +1,12 @@
+id: anti-slop-swift-no-reflection
+language: swift
+severity: error
+message: Reflection (`Mirror`, KVC, `perform(Selector:)`, or `NSClassFromString`) reads or invokes a member by name instead of a declared API.
+note: Call the property or method directly, or declare a protocol requirement it must conform to.
+rule:
+  any:
+    - pattern: "Mirror(reflecting: $EXPR)"
+    - pattern: "$OBJ.value(forKey: $KEY)"
+    - pattern: "$OBJ.setValue($VALUE, forKey: $KEY)"
+    - pattern: "$OBJ.perform(Selector($SEL))"
+    - pattern: "NSClassFromString($NAME)"

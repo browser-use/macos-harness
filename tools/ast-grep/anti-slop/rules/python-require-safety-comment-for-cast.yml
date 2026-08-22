@@ -1,0 +1,17 @@
+id: anti-slop-python-require-safety-comment-for-cast
+language: python
+severity: error
+message: This cast() has no SAFETY justification nearby.
+note: "Add a `# SAFETY:` comment on the line above the statement, or trailing the same line, stating the invariant the type checker cannot verify."
+rule:
+  any:
+    - all:
+        - kind: expression_statement
+        - has: { kind: call, stopBy: end, has: { field: function, regex: '^(typing\.)?cast$' } }
+        - not: { follows: { kind: comment, regex: 'SAFETY\s*:' } }
+        - not: { precedes: { kind: comment, regex: 'SAFETY\s*:' } }
+    - all:
+        - kind: return_statement
+        - has: { kind: call, stopBy: end, has: { field: function, regex: '^(typing\.)?cast$' } }
+        - not: { follows: { kind: comment, regex: 'SAFETY\s*:' } }
+        - not: { precedes: { kind: comment, regex: 'SAFETY\s*:' } }

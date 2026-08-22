@@ -12,6 +12,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from ._version import __version__
 from .browser import BrowserHarness
 from .macos import MacOS, MacOSError
 from .telemetry import capture_cli
@@ -54,6 +55,9 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
     subparsers = parser.add_subparsers(dest="command")
     doctor = subparsers.add_parser("doctor", help="check macOS permissions and runtime")
     doctor.add_argument(
@@ -63,7 +67,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("repl", help="start a persistent interactive Python session")
     subparsers.add_parser("skill", help="print the macOS Harness skill")
     telemetry = subparsers.add_parser(
-        "telemetry", help="inspect or change anonymous telemetry"
+        "telemetry", help="inspect or change telemetry (off by default)"
     )
     telemetry.add_argument("action", nargs="?", choices=("status", "enable", "disable"))
     see = subparsers.add_parser("see", help="capture a bounded application window")

@@ -1,0 +1,10 @@
+id: anti-slop-python-no-shape-in-symbol-names
+language: python
+severity: error
+message: Symbol name encodes its container shape instead of its domain role.
+note: Rename for what the value means (e.g. `users`, `config`) rather than its Python type (`_dict`, `_list`, `_obj`).
+rule:
+  kind: identifier
+  all:
+    - regex: '_(dict|list|str|obj|arr|map|tuple)$'
+    - not: { regex: '^__.*__$' }

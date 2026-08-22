@@ -1,0 +1,11 @@
+id: anti-slop-python-no-unsafe-dictionary-type
+language: python
+severity: error
+message: A string-keyed mapping typed to Any values hides the shape of everything read from it.
+note: Replace the Any value type with a TypedDict, dataclass, or a precise value type/union.
+rule:
+  any:
+    - pattern: { context: 'x: dict[str, Any] = None', selector: generic_type }
+    - pattern: { context: 'x: Dict[str, Any] = None', selector: generic_type }
+    - pattern: { context: 'x: Mapping[str, Any] = None', selector: generic_type }
+    - pattern: { context: 'x: MutableMapping[str, Any] = None', selector: generic_type }

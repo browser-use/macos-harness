@@ -1,0 +1,11 @@
+id: anti-slop-python-no-any-returns
+language: python
+severity: error
+message: Function return type is Any, erasing the contract callers rely on.
+note: Return a precise type, a Protocol, a TypedDict, or a small union instead of Any.
+rule:
+  kind: type
+  regex: '^(typing\.)?Any$'
+  inside:
+    kind: function_definition
+    field: return_type

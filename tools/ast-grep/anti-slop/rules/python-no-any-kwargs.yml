@@ -1,0 +1,14 @@
+id: anti-slop-python-no-any-kwargs
+language: python
+severity: error
+message: Variadic parameter is typed as Any, erasing the contract for every extra argument.
+note: Type *args/**kwargs precisely, or capture the accepted shape with a TypedDict/Protocol/ParamSpec.
+rule:
+  kind: type
+  regex: '^(typing\.)?Any$'
+  inside:
+    kind: typed_parameter
+    field: type
+    any:
+      - has: { kind: list_splat_pattern }
+      - has: { kind: dictionary_splat_pattern }

@@ -1,0 +1,18 @@
+id: anti-slop-python-no-any-parameters
+language: python
+severity: error
+message: Parameter is typed as Any, erasing its contract at the function boundary.
+note: Give the parameter a precise type, a Protocol, a TypedDict, or a small union instead of Any.
+rule:
+  kind: type
+  regex: '^(typing\.)?Any$'
+  inside:
+    field: type
+    any:
+      - kind: typed_default_parameter
+      - all:
+          - kind: typed_parameter
+          - not:
+              any:
+                - has: { kind: list_splat_pattern }
+                - has: { kind: dictionary_splat_pattern }

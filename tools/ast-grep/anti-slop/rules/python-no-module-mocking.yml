@@ -1,0 +1,10 @@
+id: anti-slop-python-no-module-mocking
+language: python
+severity: error
+message: Module/attribute mocking replaces the real dependency seam with a patched name.
+note: Inject a real fake, stub, or in-memory implementation through the constructor/parameter instead of patching the module.
+rule:
+  kind: call
+  has:
+    field: function
+    regex: '^(mock\.patch|patch(\.object)?|monkeypatch\.setattr)$'
