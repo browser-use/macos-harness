@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import weakref
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
@@ -27,7 +28,27 @@ class Accessibility:
     _SAFE_ATTRIBUTES = _AX_SAFE_ATTRIBUTES
 
     def __init__(self, host: MacOS) -> None:
-        self._host = host
+        # A weak reference, not `self._host = host`: `MacOS.__init__` does
+        # `self.ax = Accessibility(self)`, so a strong reference back here
+        # would form a MacOS<->Accessibility cycle. CPython's cyclic GC can
+        # still collect such a cycle, but only on its own occasional pass
+        # -- never promptly, the instant the last external reference to a
+        # MacOS drops -- which would leave its native agent child (if any)
+        # running for however long that takes. A weak reference here lets
+        # plain refcounting collect a MacOS immediately, as if this escape
+        # hatch did not exist at all.
+        self._host_ref = weakref.ref(host)
+
+    @property
+    def _host(self) -> MacOS:
+        host = self._host_ref()
+        if host is None:
+            raise MacOSError(
+                "This Accessibility escape hatch's MacOS instance has "
+                "already been closed or garbage collected; construct a "
+                "new MacOS to use mac.ax again"
+            )
+        return host
 
     def at(
         self,

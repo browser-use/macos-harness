@@ -2,7 +2,7 @@ import XCTest
 
 @testable import macos_harness_agent
 
-// MARK: - Assumed production API (Protocol.swift / Server.swift, owned by the Foundation slice)
+// MARK: - Assumed production API (Protocol.swift / Session.swift, owned by the Foundation slice)
 //
 // A global `maxLineBytes` constant (8 * 1024 * 1024) bounds a single NDJSON frame, measured
 // on the complete line including its trailing newline. `LineFramer` incrementally splits

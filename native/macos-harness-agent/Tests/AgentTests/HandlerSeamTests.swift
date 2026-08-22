@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 
 @testable import macos_harness_agent
@@ -95,6 +96,21 @@ final class HandlerSeamTests: XCTestCase {
       return XCTFail("expected ping result to carry a numeric protocol field")
     }
     XCTAssertEqual(protocolVersion, 1)
+  }
+
+  func testPingReportsThisProcessOwnProcessIdentifier() throws {
+    let handlers = AgentHandlers()
+    let response = handlers.handle(WireRequest(v: 1, id: 23, op: "ping", params: .object([:])))
+    XCTAssertTrue(response.ok)
+    guard case .object(let result)? = response.result else {
+      return XCTFail("expected ping's result to decode as a JSON object")
+    }
+    guard case .number(let pid)? = result["pid"] else {
+      return XCTFail("expected ping result to carry a numeric pid field")
+    }
+    XCTAssertEqual(
+      pid, Double(ProcessInfo.processInfo.processIdentifier),
+      "ping must report ProcessInfo.processInfo.processIdentifier, not a stale or borrowed pid")
   }
 
   // MARK: - Request bounds (ax_query / ax_press / ax_element_get / ax_element_set)

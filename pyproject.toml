@@ -46,6 +46,9 @@ Issues = "https://github.com/browser-use/macos-harness/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/macos_harness"]
+artifacts = ["src/macos_harness/bin/macos-harness-agent"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills/macos-harness/SKILL.md" = "macos_harness/SKILL.md"

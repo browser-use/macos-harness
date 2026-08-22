@@ -37,22 +37,6 @@ def _execute(code: str) -> int:
     return 0
 
 
-def _run_agent_command(action: str) -> int:
-    from . import agent
-
-    try:
-        if action == "start":
-            agent.start()
-        elif action == "stop":
-            agent.stop()
-        status = agent.status()
-    except agent.AgentUnavailableError as exc:
-        print(f"macos-harness: {exc}", file=sys.stderr)
-        return 1
-    print(json.dumps(status, indent=2))
-    return 0
-
-
 def _skill_text() -> str:
     bundled = resources.files("macos_harness").joinpath("SKILL.md")
     if bundled.is_file():
@@ -75,10 +59,6 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor.add_argument(
         "--request", action="store_true", help="request missing global permissions"
     )
-    agent_parser = subparsers.add_parser(
-        "agent", help="start, check, or stop the native accessibility agent"
-    )
-    agent_parser.add_argument("action", choices=("start", "status", "stop"))
     subparsers.add_parser("apps", help="list running macOS applications")
     subparsers.add_parser("repl", help="start a persistent interactive Python session")
     subparsers.add_parser("skill", help="print the macOS Harness skill")
@@ -117,9 +97,6 @@ def main(argv: list[str] | None = None) -> int:
                 mac.request_permissions()
             print(json.dumps(mac.doctor(), indent=2))
             result = 0
-            return result
-        if args.command == "agent":
-            result = _run_agent_command(args.action)
             return result
         if args.command == "apps":
             print(json.dumps(MacOS().list_apps(), indent=2))

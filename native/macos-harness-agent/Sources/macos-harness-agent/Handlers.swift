@@ -14,7 +14,6 @@ final class AgentHandlers {
 
   private let executor: AXExecutor
   private let registry = ElementRegistry()
-  private let onShutdown: () -> Void
   private let trustCheck: () -> Bool
 
   /// Snapshot of `systemUptime` the first time any handler on this process computes it,
@@ -43,14 +42,12 @@ final class AgentHandlers {
 
   /// `executor` defaults to the shared, process-wide queue so plain `AgentHandlers()` (as used
   /// by every test in `HandlerSeamTests`) works with no setup; the server wires the same
-  /// default explicitly alongside a real `onShutdown` callback per accepted connection.
+  /// default explicitly per accepted connection.
   init(
     executor: AXExecutor = .shared,
-    onShutdown: @escaping () -> Void = {},
     trustCheck: @escaping () -> Bool = { AXIsProcessTrusted() }
   ) {
     self.executor = executor
-    self.onShutdown = onShutdown
     self.trustCheck = trustCheck
   }
 
@@ -78,8 +75,6 @@ final class AgentHandlers {
       return handlePing()
     case "list_apps":
       return try handleListApps()
-    case "shutdown":
-      return handleShutdown()
     case "ax_query":
       try requireTrust()
       return try handleQuery(params: request.params)
@@ -102,7 +97,7 @@ final class AgentHandlers {
 
   /// Every AX operation re-checks trust agent-side — client-side trust never implies
   /// agent-side trust — and fails closed before touching any AX API or its params.
-  /// `ping`/`list_apps`/`shutdown` never call this.
+  /// `ping`/`list_apps` never call this.
   private func requireTrust() throws {
     guard trustCheck() else {
       throw AgentError(
@@ -110,7 +105,7 @@ final class AgentHandlers {
     }
   }
 
-  // MARK: - ping / list_apps / shutdown
+  // MARK: - ping / list_apps
 
   private func handlePing() -> JSONValue {
     .object([
@@ -136,11 +131,6 @@ final class AgentHandlers {
       "pid": .number(Double(app.pid)),
       "path": app.path.map(JSONValue.string) ?? .null,
     ])
-  }
-
-  private func handleShutdown() -> JSONValue {
-    onShutdown()
-    return .object([:])
   }
 
   // MARK: - AX query / press

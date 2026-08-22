@@ -3,9 +3,19 @@
 
 Runs a fixed number of background accessibility queries against a stable
 target (default: Finder) once per backend that is actually available, then
-prints the median wall-clock latency per backend. This is diagnostic output
-only: the script never asserts a latency threshold and never fails because a
-backend is slow.
+prints latency for each. This is diagnostic output only: the script never
+asserts a latency threshold and never fails because a backend is slow.
+
+The native backend owns exactly one ``MacOS(backend="native")`` instance
+for the whole run: its first native call -- timed explicitly and reported
+as "cold launch" -- is what actually spawns and hands off to the private
+agent child (via that instance's own ``_acquire_native()``, the same lazy
+path every public call already goes through; nothing here reaches into
+its session storage directly). Every query after that, including the
+first, reuses that one session, and it is closed in a ``finally`` no
+matter how the run ends. The first query after cold launch is reported
+separately from the rest, so a slow warm-up never buries the steady-state
+median/p95 -- and never inflates them either.
 
 It does assert two correctness invariants:
 
@@ -22,10 +32,11 @@ of these cases:
 - macOS Accessibility permission is not granted. Nothing in this script can
   run without it, so the whole benchmark (both backends) is skipped.
 - ``macos_harness.agent`` is not importable in this checkout yet.
-- The native agent cannot be reached and cannot be built on demand (missing
-  Xcode command line tools, a build failure, or any other
+- The native agent cannot be launched and cannot be built on demand
+  (missing Xcode command line tools, a build failure, or any other
   ``AgentUnavailableError``).
-- ``agent.status()`` reports ``trusted`` as anything other than ``True``.
+- The freshly launched agent's own ping reports ``trusted`` as anything
+  other than ``True``.
 
 Run directly; this is not a pytest test and takes no test dependency:
 
@@ -36,6 +47,7 @@ Run directly; this is not a pytest test and takes no test dependency:
 from __future__ import annotations
 
 import argparse
+import math
 import statistics
 import time
 from typing import Any
@@ -73,9 +85,22 @@ def _role_multiset(matches: list[dict[str, Any]]) -> list[str]:
     return sorted(str(match.get("role")) for match in matches)
 
 
+def _percentile(durations: list[float], fraction: float) -> float:
+    """Nearest-rank percentile; robust for the small samples this script runs."""
+    if not durations:
+        raise ValueError("no durations to compute a percentile from")
+    ordered = sorted(durations)
+    index = max(0, math.ceil(fraction * len(ordered)) - 1)
+    return ordered[min(index, len(ordered) - 1)]
+
+
 def _report(label: str, durations: list[float]) -> None:
     median_ms = statistics.median(durations) * 1000
-    print(f"{label} backend: {len(durations)} queries, median {median_ms:.2f} ms")
+    p95_ms = _percentile(durations, 0.95) * 1000
+    print(
+        f"{label} backend: {len(durations)} queries, "
+        f"median {median_ms:.2f} ms, p95 {p95_ms:.2f} ms"
+    )
 
 
 def _run_python_backend(app: str, iterations: int) -> QueryRun | None:
@@ -87,19 +112,46 @@ def _run_python_backend(app: str, iterations: int) -> QueryRun | None:
 
 
 def _run_native_backend(app: str, iterations: int) -> QueryRun | None:
+    """Own exactly one native session for the whole run, cold launch and all.
+
+    ``mac._acquire_native()`` is the *same* lazy path ``mac.ax.query(...)``
+    would trigger on its own on first use; calling it directly here only
+    lets the launch itself be timed apart from the first query, never
+    bypasses or duplicates it. No session is ever injected into ``mac``'s
+    own storage by hand.
+    """
     if native_agent is None:
         print("skip native: macos_harness.agent is not available in this build.")
         return None
+
+    mac = MacOS(backend="native")
     try:
-        native_agent.ensure_running()
-    except native_agent.AgentUnavailableError as exc:
-        print(f"skip native: {exc}")
-        return None
-    status = native_agent.status()
-    if status.get("trusted") is not True:
-        print("skip native: native agent is not Accessibility-trusted.")
-        return None
-    return _time_queries(MacOS(backend="native"), app, iterations)
+        launch_started = time.perf_counter()
+        try:
+            client = mac._acquire_native()
+        except native_agent.AgentUnavailableError as exc:
+            print(f"skip native: {exc}")
+            return None
+        launch_ms = (time.perf_counter() - launch_started) * 1000
+        if client is None:
+            print("skip native: native agent is not available.")
+            return None
+        if client.ping().get("trusted") is not True:
+            print("skip native: native agent is not Accessibility-trusted.")
+            return None
+        print(f"native backend: cold launch {launch_ms:.2f} ms")
+
+        first_started = time.perf_counter()
+        matches = mac.ax.query(app=app, role="any", limit=10)
+        first_ms = (time.perf_counter() - first_started) * 1000
+        print(f"native backend: first query {first_ms:.2f} ms")
+
+        steady_iterations = iterations - 1
+        if steady_iterations <= 0:
+            return [], matches
+        return _time_queries(mac, app, steady_iterations)
+    finally:
+        mac.close()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -132,7 +184,13 @@ def main(argv: list[str] | None = None) -> int:
     native_run = _run_native_backend(args.app, args.iterations)
     if native_run is not None:
         native_durations, native_matches = native_run
-        _report("native", native_durations)
+        if native_durations:
+            _report("native", native_durations)
+        else:
+            print(
+                "native backend: only cold launch + first query ran "
+                "(pass --iterations >= 2 for steady-state median/p95)"
+            )
 
         python_roles = _role_multiset(python_matches)
         native_roles = _role_multiset(native_matches)

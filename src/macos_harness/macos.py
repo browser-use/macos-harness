@@ -13,21 +13,32 @@ import re
 import struct
 import subprocess
 import tempfile
+import threading
 import time
+import weakref
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Self
 
 from PIL import Image, ImageDraw
 
 from .overlay import LivePointerOverlay
 from .pointer import POINTER_HOTSPOT, pointer_points
 
+if TYPE_CHECKING:
+    # Only for annotations -- `native.py` imports from this module at
+    # runtime, so importing it back here for real would be circular.
+    # `from __future__ import annotations` (above) already makes every
+    # annotation in this file a deferred string, so this import never
+    # needs to run outside a type checker.
+    from .native import NativeClient
+
 try:
     import ApplicationServices as AS
-    from AppKit import NSWorkspace
+    from AppKit import NSRunningApplication, NSWorkspace
 except ImportError as exc:  # pragma: no cover - exercised on non-macOS hosts
     AS = None  # type: ignore[assignment]
+    NSRunningApplication = None  # type: ignore[assignment]
     NSWorkspace = None  # type: ignore[assignment]
     _IMPORT_ERROR: ImportError | None = exc
 else:
@@ -303,6 +314,38 @@ def _split_scroll_delta(delta: int, maximum: int) -> list[int]:
     return steps or [0]
 
 
+class _Unresolved:
+    """Sentinel type for ``MacOS._resolved_native_client``: its one
+    instance below marks "no cached client, error, or fallback yet" --
+    distinct from an ``auto`` backend's already-resolved ``None``.
+    """
+
+    __slots__ = ()
+
+
+#: The single ``_Unresolved`` instance ever constructed.
+_UNRESOLVED = _Unresolved()
+
+
+def _finalize_native_session(session_box: list[Any | None]) -> None:
+    """Finalizer callback for one ``MacOS`` instance's native agent child.
+
+    Deliberately a free function taking only a plain mutable box, never a
+    bound method or closure over the owning ``MacOS`` instance itself:
+    ``MacOS`` and ``Accessibility`` hold references to each other
+    (``self.ax = Accessibility(self)``), and a ``weakref.finalize``
+    callback that captures its own target, even indirectly, keeps that
+    target permanently unreachable-but-never-collectable. ``MacOS.close()``
+    calls this same finalizer directly (idempotent: a finalizer only ever
+    fires once), and it also runs automatically once the owning instance
+    is unreachable or the interpreter exits, even if ``close()`` was
+    never called at all.
+    """
+    session, session_box[0] = session_box[0], None
+    if session is not None:
+        session.close()
+
+
 class MacOS:
     """Low-level macOS observation and control for one persistent process."""
 
@@ -323,8 +366,42 @@ class MacOS:
         self._overlay = LivePointerOverlay()
         self.ax = Accessibility(self)
         self._backend = _resolve_backend(backend)
-        self._native_client: Any | None = None
+        self._native_client: NativeClient | None = None
         self._native_error: Exception | None = None
+        self._native_closed = False
+        self._native_lock = threading.Lock()
+        # A plain mutable box, not a `self._native_session` attribute: the
+        # finalizer below must never capture `self` (see
+        # `_finalize_native_session`), so it is handed this box instead,
+        # and `close()`/`_acquire_native()` mutate its one slot in place.
+        self._native_session_box: list[Any | None] = [None]
+        self._native_finalizer = weakref.finalize(
+            self, _finalize_native_session, self._native_session_box
+        )
+
+    def close(self) -> None:
+        """Tear down this instance's private native agent child, if any.
+
+        Idempotent: safe to call more than once, and safe when no native
+        session was ever launched (the common, default ``python`` backend
+        never opens a socket at all). Once closed, any further attempt to
+        route a call through the native agent raises explicitly rather
+        than silently relaunching a new child or falling back to another
+        backend — construct a new ``MacOS`` to use ``native``/``auto``
+        again. Also runs automatically, via the same finalizer this calls
+        directly, if this instance becomes unreachable or the interpreter
+        exits without an explicit ``close()``.
+        """
+        with self._native_lock:
+            self._native_closed = True
+            self._native_client = None
+        self._native_finalizer()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
     # --- permissions and app discovery ---------------------------------
 
@@ -417,9 +494,22 @@ class MacOS:
 
     def _resolve_app(self, query: str | int | None) -> tuple[Any, dict[str, Any]]:
         if not query and self._last_app:
-            query = str(self._last_app["pid"])
+            query = self._last_app["pid"]
         if not query:
             raise MacOSError("Specify an app name, bundle ID, path, or PID")
+
+        if isinstance(query, int):
+            # An exact pid resolves directly against the process table --
+            # no need to enumerate every running application to find one
+            # match by exact value, and no risk of the notification-cache
+            # staleness `NSWorkspace.runningApplications()` can have in a
+            # process that never pumps its own run loop (a freshly
+            # launched app can otherwise appear to not exist yet, purely
+            # as an artifact of when this process last observed a change).
+            app = NSRunningApplication.runningApplicationWithProcessIdentifier_(query)
+            if app is None or app.isTerminated():
+                raise ApplicationNotFoundError(f"No running application matches {query!r}")
+            return app, self._app_info(app)
 
         needle = str(query).casefold()
         candidates: list[tuple[Any, dict[str, Any]]] = []
@@ -783,55 +873,109 @@ class MacOS:
             )
         return element
 
-    def _acquire_native(self) -> Any | None:
-        """Lazily connect the native agent client.
+    def _resolved_native_client(self) -> NativeClient | None | _Unresolved:
+        """Return the already-resolved client or ``auto`` fallback, or
+        ``_UNRESOLVED`` when a fresh ``agent.launch()`` attempt is still
+        needed.
 
-        Returns the connected client, or ``None`` when ``backend == "auto"``
-        and the agent's socket could not be reached at all — a
-        ``NativeConnectionError``, strictly before any request, including
-        the handshake ping, was dispatched. ``backend == "native"`` always
-        raises instead of returning ``None``.
-
-        Every other native failure (a protocol-version mismatch, an
-        ``expected_pid`` identity mismatch, a malformed handshake response)
-        means a real request already reached *some* process on the other
-        end of the socket, so it hard-fails even under ``auto`` rather than
-        silently falling back to what could be a wrong or unexpected agent.
-        Only the ``NativeConnectionError`` case is cached, so repeated
-        calls do not re-probe an agent already known unreachable; a
-        handshake mismatch is left uncached so a transient race (e.g. the
-        agent mid-restart) gets a fresh chance to resolve on the next call.
-
-        The client is bound to the exact pid this call's own
-        ``agent.ensure_running()`` verified from the agent's own ping
-        response — never a second, separately-fetched ``agent.status()``
-        call, which could race a concurrent restart between the two reads.
+        Raises directly for the three states that must never fall through
+        to another launch attempt: this instance's ``close()`` already
+        ran, ``backend == "native"`` already knows the agent is
+        unavailable from an earlier call, or ``backend == "auto"`` has a
+        cached failure that is not an ``AgentUnavailableError`` (a hard
+        handshake/protocol mismatch never becomes fallback-eligible just
+        because a later call asks again).
         """
         if self._native_client is not None:
             return self._native_client
+        if self._native_closed:
+            raise MacOSError(
+                "This MacOS instance's close() already tore down its "
+                f"native agent child; construct a new MacOS to use "
+                f"backend={self._backend!r} again"
+            )
         if self._native_error is not None:
-            if self._backend == "auto":
+            from . import agent
+
+            if self._backend == "auto" and isinstance(
+                self._native_error, agent.AgentUnavailableError
+            ):
                 return None
             raise self._native_error
-        from . import agent, native
+        return _UNRESOLVED
 
-        try:
-            verified = agent.ensure_running()
-        except agent.AgentUnavailableError as exc:
-            self._native_error = exc
-            if self._backend == "auto":
-                return None
-            raise
-        client = native.NativeClient(agent.socket_path(), expected_pid=verified["pid"])
-        try:
-            client.connect()
-        except native.NativeConnectionError as exc:
-            self._native_error = exc
-            if self._backend == "auto":
-                return None
-            raise
-        self._native_client = client
-        return self._native_client
+    def _acquire_native(self) -> NativeClient | None:
+        """Lazily launch this instance's own private native agent child.
+
+        Returns the connected, handshake-verified client, or ``None``
+        when ``backend == "auto"`` and the agent could not be made
+        available at all — an ``AgentUnavailableError`` ``agent.launch()``
+        raised before a real handshake response was ever received (no
+        override, bundled, or buildable executable; a spawn failure; or
+        the child crashing, closing its socket, or never answering
+        before its own timeout). ``backend == "native"`` always raises
+        instead of returning ``None``.
+
+        Every other native failure — a protocol-version mismatch or an
+        ``expected_pid`` identity mismatch discovered by the very
+        handshake the freshly spawned child just answered — means a real
+        response already came back from *some* process, so it hard-fails
+        even under ``auto`` rather than silently falling back to what
+        could be a wrong or unexpected agent. Every ``agent.launch()``
+        failure is cached here, so repeated calls never re-attempt a
+        launch already known to fail; only ``AgentUnavailableError`` is
+        ever fallback-eligible under ``auto`` -- a cached hard mismatch
+        keeps raising on every later call instead of silently spawning
+        another child.
+
+        Concurrent first use from multiple threads on the same instance
+        launches exactly one child: the actual launch only ever happens
+        while holding ``self._native_lock``, and every caller re-checks
+        under that lock in case another thread already resolved (or
+        failed) it while this one was waiting.
+
+        Each ``MacOS`` instance launches — and, via ``close()``, tears
+        down — its own private child, never a client shared with any
+        other instance or process.
+
+        Ownership transfer from a successful ``agent.launch()`` into
+        this instance's own storage (``_native_session_box``,
+        ``_native_client``) is itself ``BaseException``-safe: a
+        ``KeyboardInterrupt`` landing after ``launch()`` has already
+        returned a live session but before that storage step finishes
+        would otherwise orphan it -- a real child process this instance
+        never records anywhere, so nothing (not even ``close()``) would
+        ever reap it. Any such interruption instead clears whatever
+        partial state was written, closes that exact session, and
+        re-raises unchanged.
+        """
+        resolved = self._resolved_native_client()
+        if resolved is not _UNRESOLVED:
+            return resolved
+        from . import agent
+
+        with self._native_lock:
+            resolved = self._resolved_native_client()
+            if resolved is not _UNRESOLVED:
+                return resolved
+            try:
+                session = agent.launch()
+            except Exception as exc:
+                self._native_error = exc
+                if self._backend == "auto" and isinstance(
+                    exc, agent.AgentUnavailableError
+                ):
+                    return None
+                raise
+            try:
+                self._native_session_box[0] = session
+                self._native_client = session.client
+            except BaseException:
+                self._native_session_box[0] = None
+                self._native_client = None
+                session.close()
+                raise
+            return self._native_client
 
     def _intern_native_match(self, raw: dict[str, Any], client: Any) -> dict[str, Any]:
         """Turn one wire match descriptor into a client-side element_index."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Never
 
 import pytest
 from PIL import Image
@@ -79,6 +80,174 @@ def test_agent_surface_is_flat_and_explicit() -> None:
         assert callable(getattr(mac.ax, verb))
     assert not hasattr(mac, "mouse")
     assert not hasattr(mac, "keyboard")
+
+
+class _FakeRunningApp:
+    """Minimal stand-in for NSRunningApplication: only what `_app_info`
+    and `_resolve_app`'s exact-pid fast path ever touch."""
+
+    def __init__(self, pid: int, *, name: str = "HelperApp", terminated: bool = False) -> None:
+        self._pid = pid
+        self._name = name
+        self._terminated = terminated
+
+    def localizedName(self) -> str:
+        return self._name
+
+    def bundleIdentifier(self) -> None:
+        return None
+
+    def bundleURL(self) -> None:
+        return None
+
+    def processIdentifier(self) -> int:
+        return self._pid
+
+    def isTerminated(self) -> bool:
+        return self._terminated
+
+
+def test_resolve_app_exact_pid_hit_never_enumerates_workspace(monkeypatch) -> None:
+    """An int pid resolves directly by identity -- it must never scan
+    NSWorkspace.runningApplications(), which is not just wasteful but can
+    return stale, notification-cache-backed data in a process that never
+    pumps its own run loop."""
+    mac = MacOS()
+    fake_app = _FakeRunningApp(4242, name="HelperApp")
+
+    class _FakeRunningApplication:
+        @staticmethod
+        def runningApplicationWithProcessIdentifier_(pid: int) -> _FakeRunningApp | None:
+            assert pid == 4242
+            return fake_app
+
+    class _FakeWorkspace:
+        @staticmethod
+        def sharedWorkspace() -> Never:
+            raise AssertionError(
+                "must not enumerate NSWorkspace.runningApplications() for an int pid"
+            )
+
+    monkeypatch.setattr(macos_module, "NSRunningApplication", _FakeRunningApplication)
+    monkeypatch.setattr(macos_module, "NSWorkspace", _FakeWorkspace)
+
+    app, info = mac._resolve_app(4242)
+
+    assert app is fake_app
+    assert info["pid"] == 4242
+    assert info["name"] == "HelperApp"
+
+
+def test_resolve_app_exact_pid_miss_raises_without_enumerating_workspace(
+    monkeypatch,
+) -> None:
+    mac = MacOS()
+
+    class _FakeRunningApplication:
+        @staticmethod
+        def runningApplicationWithProcessIdentifier_(pid: int) -> _FakeRunningApp | None:
+            return None
+
+    class _FakeWorkspace:
+        @staticmethod
+        def sharedWorkspace() -> Never:
+            raise AssertionError(
+                "must not enumerate NSWorkspace.runningApplications() for an int pid"
+            )
+
+    monkeypatch.setattr(macos_module, "NSRunningApplication", _FakeRunningApplication)
+    monkeypatch.setattr(macos_module, "NSWorkspace", _FakeWorkspace)
+
+    with pytest.raises(ApplicationNotFoundError, match="99999"):
+        mac._resolve_app(99999)
+
+
+def test_resolve_app_exact_pid_rejects_a_terminated_process_without_enumerating(
+    monkeypatch,
+) -> None:
+    mac = MacOS()
+    terminated_app = _FakeRunningApp(4242, terminated=True)
+
+    class _FakeRunningApplication:
+        @staticmethod
+        def runningApplicationWithProcessIdentifier_(pid: int) -> _FakeRunningApp | None:
+            return terminated_app
+
+    class _FakeWorkspace:
+        @staticmethod
+        def sharedWorkspace() -> Never:
+            raise AssertionError(
+                "must not enumerate NSWorkspace.runningApplications() for an int pid"
+            )
+
+    monkeypatch.setattr(macos_module, "NSRunningApplication", _FakeRunningApplication)
+    monkeypatch.setattr(macos_module, "NSWorkspace", _FakeWorkspace)
+
+    with pytest.raises(ApplicationNotFoundError, match="4242"):
+        mac._resolve_app(4242)
+
+
+def test_resolve_app_string_query_still_enumerates_workspace(monkeypatch) -> None:
+    """A name/bundle-id/path/stringified-pid query is unchanged: it still
+    scans NSWorkspace.runningApplications(), never the exact-pid fast
+    path."""
+    mac = MacOS()
+    fake_app = _FakeRunningApp(4242, name="HelperApp")
+
+    class _FakeWorkspace:
+        @staticmethod
+        def sharedWorkspace() -> type[_FakeWorkspace]:
+            return _FakeWorkspace
+
+        @staticmethod
+        def runningApplications() -> list[_FakeRunningApp]:
+            return [fake_app]
+
+    def _boom(pid: int) -> Never:
+        raise AssertionError("string queries must never use the exact-pid fast path")
+
+    class _FakeRunningApplication:
+        runningApplicationWithProcessIdentifier_ = staticmethod(_boom)
+
+    monkeypatch.setattr(macos_module, "NSWorkspace", _FakeWorkspace)
+    monkeypatch.setattr(macos_module, "NSRunningApplication", _FakeRunningApplication)
+
+    app, info = mac._resolve_app("HelperApp")
+
+    assert app is fake_app
+    assert info["pid"] == 4242
+
+
+def test_resolve_app_last_app_reuse_passes_an_int_pid(monkeypatch) -> None:
+    """Reusing `_last_app` (a falsy query with a prior resolution cached)
+    must feed the exact-pid fast path an int, not a stringified one -- it
+    benefits from the same identity lookup as an explicit int query."""
+    mac = MacOS()
+    mac._last_app = {"name": "HelperApp", "bundle_id": None, "pid": 4242, "path": None}
+    fake_app = _FakeRunningApp(4242, name="HelperApp")
+
+    seen: list[int] = []
+
+    class _FakeRunningApplication:
+        @staticmethod
+        def runningApplicationWithProcessIdentifier_(pid: int) -> _FakeRunningApp | None:
+            seen.append(pid)
+            return fake_app
+
+    class _FakeWorkspace:
+        @staticmethod
+        def sharedWorkspace() -> Never:
+            raise AssertionError("must not enumerate for a cached last_app pid reuse")
+
+    monkeypatch.setattr(macos_module, "NSRunningApplication", _FakeRunningApplication)
+    monkeypatch.setattr(macos_module, "NSWorkspace", _FakeWorkspace)
+
+    app, info = mac._resolve_app(None)
+
+    assert app is fake_app
+    assert info["pid"] == 4242
+    assert seen == [4242]
+    assert isinstance(seen[0], int)
 
 
 def test_doctor_reports_real_permission_preflights(monkeypatch) -> None:

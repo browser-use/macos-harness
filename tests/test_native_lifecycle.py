@@ -1,247 +1,545 @@
-"""CI-safe lifecycle tests for the native agent process supervisor.
+"""CI-safe lifecycle tests for the native agent's Python-side supervisor.
 
-These exercise ``macos_harness.agent`` (paths, locking, pidfile handling,
-stale-socket recovery, readiness polling, start/status/stop/ensure_running)
-against injected seams — never a real subprocess, the Swift toolchain, or a
-real ``swift build``. The one genuinely OS-level primitive, signal
-escalation in ``_terminate_pid``, gets its own focused test that
-monkeypatches ``os.kill`` directly rather than touching a real process.
+These exercise ``macos_harness.agent``: executable resolution and build
+freshness, ``launch()``'s spawn-and-handshake orchestration (via a small,
+fully scripted fake agent -- a real subprocess speaking the real wire
+protocol over a real inherited socketpair fd, never the Swift toolchain or
+a real ``swift build``), and ``_close_session``'s cleanup escalation (via a
+lightweight ``Popen``-like double, no subprocess needed at all). Routing
+behavior at the ``MacOS`` level (``_acquire_native``, ``close()``, the
+context manager) is covered separately in ``test_native_smoke.py``; raw
+wire-protocol framing is covered in ``test_native_protocol.py``.
 """
 
 from __future__ import annotations
 
-import contextlib
-import fcntl
-import itertools
-import json
 import os
-import shutil
-import signal
 import socket
-import tempfile
+import subprocess
+import sys
 import threading
 import time
-from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import macos_harness.agent as agent_module
-from macos_harness.agent import AgentPaths
+import macos_harness.native as native_module
 
-# --- a tiny, real-socket fake agent used as the injected spawn seam --------
-
-
-class _FakeLifecycleAgent:
-    """Answers ``ping`` over a real AF_UNIX socket from a background thread.
-
-    Stands in for ``_spawn_process``'s real ``subprocess.Popen`` result:
-    ``agent.py`` only ever reads ``.pid`` off what ``_spawn_process``
-    returns (termination is always routed through the injected, pid-based
-    ``_terminate_pid`` seam), so that is all this needs to expose.
-    """
-
-    _pids = itertools.count(900001)
-
-    def __init__(self, paths: AgentPaths) -> None:
-        self.pid = next(_FakeLifecycleAgent._pids)
-        self._stop = threading.Event()
-        self._started_at = time.monotonic()
-        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._server.bind(str(paths.socket))
-        self._server.listen(4)
-        self._server.settimeout(0.2)
-        self._thread = threading.Thread(target=self._serve, daemon=True)
-        self._thread.start()
-
-    def _serve(self) -> None:
-        while not self._stop.is_set():
-            try:
-                conn, _ = self._server.accept()
-            except OSError:
-                continue
-            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
-
-    def _handle(self, conn: socket.socket) -> None:
-        with conn:
-            conn.settimeout(2.0)
-            buffer = bytearray()
-            while not self._stop.is_set():
-                try:
-                    chunk = conn.recv(65536)
-                except OSError:
-                    return
-                if not chunk:
-                    return
-                buffer += chunk
-                while b"\n" in buffer:
-                    newline = buffer.index(b"\n")
-                    line = bytes(buffer[: newline + 1])
-                    del buffer[: newline + 1]
-                    try:
-                        request = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    result = {
-                        "protocol": 1,
-                        "agent_version": "test-fake",
-                        "pid": self.pid,
-                        "trusted": True,
-                        "uptime_s": time.monotonic() - self._started_at,
-                    }
-                    payload = json.dumps(
-                        {"id": request.get("id"), "ok": True, "result": result}
-                    )
-                    try:
-                        conn.sendall((payload + "\n").encode())
-                    except OSError:
-                        return
-
-    def terminate(self) -> None:
-        self._stop.set()
-        with contextlib.suppress(OSError):
-            self._server.close()
-        self._thread.join(timeout=2.0)
+# --- a tiny, real, controllable fake agent subprocess ----------------------
+#
+# Reads exactly the `--fd FD` argument convention `agent._spawn` invokes,
+# adopts that inherited descriptor as a socket, and behaves according to
+# the `FAKE_AGENT_MODE` environment variable `_spawn` inherits from this
+# test process:
+#
+#   ok         -- answer every request it receives (its own real pid on
+#                 the handshake), looping until the peer closes -- a
+#                 real, well-behaved agent that stays usable for more
+#                 than just the handshake.
+#   wrong_pid  -- answer the handshake with a pid that is deliberately
+#                 not its own; behaves like "ok" for anything after.
+#   malformed  -- answer the handshake with a line that is not valid
+#                 JSON at all, then close.
+#   eof        -- close the connection immediately, without answering.
+#   hang       -- never answer anything; idle (silently absorbing
+#                 input) until the peer closes.
+#   hang_after_handshake
+#              -- answer the handshake normally, then silently absorb
+#                 everything after without ever responding again --
+#                 simulates a crash/hang discovered only on a later
+#                 request, after the connection was already trusted.
+_FAKE_AGENT_BODY = r'''
+import json
+import os
+import socket
+import sys
 
 
-_REGISTRY: dict[int, _FakeLifecycleAgent] = {}
+def main():
+    args = sys.argv[1:]
+    if args[:1] != ["--fd"]:
+        sys.exit(2)
+    fd = int(args[1])
+    sock = socket.socket(fileno=fd)
+    mode = os.environ.get("FAKE_AGENT_MODE", "ok")
+    if mode == "eof":
+        sock.close()
+        return
+    if mode == "hang":
+        while sock.recv(65536):
+            pass
+        return
+    buffer = b""
+    first = True
+    while True:
+        while b"\n" not in buffer:
+            chunk = sock.recv(65536)
+            if not chunk:
+                return
+            buffer += chunk
+        line, _, buffer = buffer.partition(b"\n")
+        request = json.loads(line)
+        if first and mode == "malformed":
+            sock.sendall(b"this is not json\n")
+            return
+        if not first and mode == "hang_after_handshake":
+            while sock.recv(65536):
+                pass
+            return
+        pid = os.getpid()
+        if first and mode == "wrong_pid":
+            pid += 1
+        result = {
+            "protocol": 1,
+            "agent_version": "fake-e2e",
+            "pid": pid,
+            "trusted": True,
+            "uptime_s": 0.0,
+        }
+        payload = json.dumps({"id": request["id"], "ok": True, "result": result}) + "\n"
+        sock.sendall(payload.encode())
+        first = False
 
 
-def _fake_spawn_process(binary: Path, paths: AgentPaths) -> _FakeLifecycleAgent:
-    fake = _FakeLifecycleAgent(paths)
-    _REGISTRY[fake.pid] = fake
-    return fake
-
-
-def _fake_process_alive(pid: int) -> bool:
-    return pid in _REGISTRY
-
-
-def _fake_terminate_pid(
-    pid: int, *, timeout: float, revalidate: Callable[[], bool] | None = None
-) -> bool:
-    # The fake completes instantly -- there is no real SIGTERM-wait-
-    # SIGKILL window here for a second identity check to protect against.
-    # `_terminate_pid`'s own `revalidate` contract gets its own focused,
-    # unmocked tests below.
-    del revalidate
-    fake = _REGISTRY.pop(pid, None)
-    if fake is not None:
-        fake.terminate()
-    return True
+main()
+'''
 
 
 @pytest.fixture
-def fake_lifecycle(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    # A short, unique root directly under /tmp keeps the fake agent's
-    # AF_UNIX socket path well under the platform's sun_path limit — the
-    # nested per-test directories pytest's own tmp_path builds are often
-    # too long for socket.bind() to accept. The state dir itself is an
-    # as-yet-nonexistent child so a fresh status() sees no state directory.
-    root = Path(tempfile.mkdtemp(prefix="mh-", dir="/tmp"))
-    state_home = root / "s"
-    monkeypatch.setenv("MACOS_HARNESS_HOME", str(state_home))
-    _REGISTRY.clear()
+def isolated_native_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Path:
+    """Isolate executable-resolution tests from this checkout's own real
+    bundled binary, real ``native/`` source tree, and any override left in
+    the ambient environment -- returns the fake package directory the
+    "local SwiftPM release" tier resolves against.
+    """
+    monkeypatch.delenv(agent_module._AGENT_BIN_ENV, raising=False)
     monkeypatch.setattr(
-        agent_module, "_build_executable", lambda **kwargs: Path("/fake/agent-binary")
+        agent_module, "_bundled_executable_path", lambda: tmp_path / "bin" / "unbundled"
     )
-    monkeypatch.setattr(agent_module, "_spawn_process", _fake_spawn_process)
-    monkeypatch.setattr(agent_module, "_process_alive", _fake_process_alive)
-    monkeypatch.setattr(agent_module, "_terminate_pid", _fake_terminate_pid)
-    try:
-        yield state_home
-    finally:
-        try:
-            for fake in list(_REGISTRY.values()):
-                with contextlib.suppress(OSError):
-                    fake.terminate()
-        finally:
-            _REGISTRY.clear()
-            shutil.rmtree(root, ignore_errors=True)
+    package_dir = tmp_path / "native-src"
+    monkeypatch.setattr(agent_module, "_repo_native_package_dir", lambda: package_dir)
+    return package_dir
 
 
-def _pid_file_contents(path: Path) -> int:
-    return int(path.read_text(encoding="utf-8").strip())
+@pytest.fixture
+def fake_agent_script(tmp_path: Path) -> Path:
+    script = tmp_path / "fake-macos-harness-agent"
+    script.write_text(f"#!{sys.executable}\n{_FAKE_AGENT_BODY}", encoding="utf-8")
+    script.chmod(0o700)
+    return script
 
 
-# --- paths --------------------------------------------------------------------
+@pytest.fixture
+def launch_with(monkeypatch: pytest.MonkeyPatch, fake_agent_script: Path):
+    """Point ``agent._resolve_executable()`` at the fake agent script (the
+    explicit-override tier) and run a real ``launch()`` against it under a
+    given ``FAKE_AGENT_MODE``.
+    """
+
+    def _launch(mode: str, *, timeout: float = 5.0) -> agent_module.AgentSession:
+        monkeypatch.setenv(agent_module._AGENT_BIN_ENV, str(fake_agent_script))
+        monkeypatch.setenv("FAKE_AGENT_MODE", mode)
+        return agent_module.launch(timeout=timeout)
+
+    return _launch
 
 
-def test_state_dir_honors_home_override(
+# --- _is_local_release_fresh ------------------------------------------------
+
+
+def _touch(path: Path, *, age_s: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_bytes(b"x")
+    when = time.time() - age_s
+    os.utime(path, (when, when))
+
+
+def test_is_local_release_fresh_when_binary_newer_than_manifest_and_sources(
+    isolated_native_paths: Path,
+) -> None:
+    package_dir = isolated_native_paths
+    binary = package_dir / ".build" / "release" / agent_module._EXECUTABLE_NAME
+    _touch(package_dir / "Package.swift", age_s=20)
+    _touch(package_dir / "Sources" / "Main.swift", age_s=20)
+    _touch(binary, age_s=5)
+
+    assert agent_module._is_local_release_fresh(binary) is True
+
+
+def test_is_local_release_stale_when_a_source_file_is_newer_than_binary(
+    isolated_native_paths: Path,
+) -> None:
+    package_dir = isolated_native_paths
+    binary = package_dir / ".build" / "release" / agent_module._EXECUTABLE_NAME
+    _touch(binary, age_s=20)
+    _touch(package_dir / "Package.swift", age_s=15)
+    _touch(package_dir / "Sources" / "Main.swift", age_s=1)  # newer than binary
+
+    assert agent_module._is_local_release_fresh(binary) is False
+
+
+def test_is_local_release_stale_when_manifest_is_newer_than_binary(
+    isolated_native_paths: Path,
+) -> None:
+    package_dir = isolated_native_paths
+    binary = package_dir / ".build" / "release" / agent_module._EXECUTABLE_NAME
+    _touch(binary, age_s=20)
+    _touch(package_dir / "Package.swift", age_s=1)  # newer than binary
+    _touch(package_dir / "Sources" / "Main.swift", age_s=15)
+
+    assert agent_module._is_local_release_fresh(binary) is False
+
+
+def test_is_local_release_stale_when_binary_is_missing(
+    isolated_native_paths: Path,
+) -> None:
+    binary = isolated_native_paths / ".build" / "release" / agent_module._EXECUTABLE_NAME
+    assert agent_module._is_local_release_fresh(binary) is False
+
+
+def test_is_local_release_fresh_ignores_test_sources(
+    isolated_native_paths: Path,
+) -> None:
+    """A change under ``Tests/`` never invalidates freshness -- it can
+    never affect what the built executable does."""
+    package_dir = isolated_native_paths
+    binary = package_dir / ".build" / "release" / agent_module._EXECUTABLE_NAME
+    _touch(package_dir / "Package.swift", age_s=20)
+    _touch(package_dir / "Sources" / "Main.swift", age_s=20)
+    _touch(binary, age_s=5)
+    _touch(package_dir / "Tests" / "AgentTests" / "MainTests.swift", age_s=0)
+
+    assert agent_module._is_local_release_fresh(binary) is True
+
+
+def test_is_local_release_stale_when_manifest_missing_even_if_binary_and_sources_exist(
+    isolated_native_paths: Path,
+) -> None:
+    """No ``Package.swift`` at all -- e.g. an installed wheel with no
+    ``native/`` directory -- must never trust a stray binary as fresh,
+    even if a ``Sources/`` tree happens to exist alongside it."""
+    package_dir = isolated_native_paths
+    binary = package_dir / ".build" / "release" / agent_module._EXECUTABLE_NAME
+    _touch(package_dir / "Sources" / "Main.swift", age_s=20)
+    _touch(binary, age_s=5)
+
+    assert agent_module._is_local_release_fresh(binary) is False
+
+
+def test_is_local_release_stale_when_sources_dir_missing_or_empty(
+    isolated_native_paths: Path,
+) -> None:
+    """A manifest with no production Swift source at all (missing
+    ``Sources/``, or an empty one) must never trust a stray binary as
+    fresh."""
+    package_dir = isolated_native_paths
+    binary = package_dir / ".build" / "release" / agent_module._EXECUTABLE_NAME
+    _touch(package_dir / "Package.swift", age_s=20)
+    _touch(binary, age_s=5)
+
+    assert agent_module._is_local_release_fresh(binary) is False
+
+    (package_dir / "Sources").mkdir(parents=True, exist_ok=True)
+    assert agent_module._is_local_release_fresh(binary) is False
+
+
+# --- _ensure_local_release ---------------------------------------------------
+
+
+def test_ensure_local_release_reuses_a_fresh_binary_without_building(
+    isolated_native_paths: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_dir = isolated_native_paths
+    binary = package_dir / ".build" / "release" / agent_module._EXECUTABLE_NAME
+    _touch(package_dir / "Package.swift", age_s=20)
+    _touch(package_dir / "Sources" / "Main.swift", age_s=20)
+    _touch(binary, age_s=5)
+
+    def _boom(**kwargs: object) -> Path:
+        raise AssertionError("must not build a binary already known fresh")
+
+    monkeypatch.setattr(agent_module, "_build_executable", _boom)
+
+    assert agent_module._ensure_local_release() == binary
+
+
+def test_ensure_local_release_builds_when_stale(
+    isolated_native_paths: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_dir = isolated_native_paths
+    binary = package_dir / ".build" / "release" / agent_module._EXECUTABLE_NAME
+    _touch(binary, age_s=20)
+    _touch(package_dir / "Sources" / "Main.swift", age_s=1)  # newer -> stale
+    rebuilt = package_dir / ".build" / "release" / "rebuilt-marker"
+    calls: list[str] = []
+    monkeypatch.setattr(
+        agent_module, "_build_executable", lambda **kw: calls.append("build") or rebuilt
+    )
+
+    assert agent_module._ensure_local_release() == rebuilt
+    assert calls == ["build"]
+
+
+def test_ensure_local_release_builds_when_binary_missing(
+    isolated_native_paths: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_dir = isolated_native_paths
+    rebuilt = package_dir / ".build" / "release" / "built-marker"
+    calls: list[str] = []
+    monkeypatch.setattr(
+        agent_module, "_build_executable", lambda **kw: calls.append("build") or rebuilt
+    )
+
+    assert agent_module._ensure_local_release() == rebuilt
+    assert calls == ["build"]
+
+
+def test_ensure_local_release_force_rebuilds_even_when_fresh(
+    isolated_native_paths: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_dir = isolated_native_paths
+    binary = package_dir / ".build" / "release" / agent_module._EXECUTABLE_NAME
+    _touch(package_dir / "Package.swift", age_s=20)
+    _touch(package_dir / "Sources" / "Main.swift", age_s=20)
+    _touch(binary, age_s=5)  # objectively fresh
+    calls: list[str] = []
+    monkeypatch.setattr(
+        agent_module, "_build_executable", lambda **kw: calls.append("build") or binary
+    )
+
+    agent_module._ensure_local_release(force=True)
+
+    assert calls == ["build"]
+
+
+# --- _build_executable: local release path reused before --show-bin-path ----
+
+
+def test_build_executable_returns_local_release_path_directly_without_show_bin_path(
+    isolated_native_paths: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_dir = isolated_native_paths
+    manifest = package_dir / "Package.swift"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("// swift-tools-version:5.9\n")
+    monkeypatch.setattr(agent_module.shutil, "which", lambda name: "/usr/bin/swift")
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if "--show-bin-path" in cmd:
+            raise AssertionError(
+                "must not invoke --show-bin-path when the conventional "
+                "release path already exists after a successful build"
+            )
+        binary = agent_module._local_release_path()
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_bytes(b"fake-binary")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(agent_module.subprocess, "run", _fake_run)
+
+    result = agent_module._build_executable()
+
+    assert result == agent_module._local_release_path()
+    assert len(calls) == 1
+
+
+def test_build_executable_falls_back_to_show_bin_path_when_conventional_path_missing(
+    isolated_native_paths: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    package_dir = isolated_native_paths
+    manifest = package_dir / "Package.swift"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("// swift-tools-version:5.9\n")
+    monkeypatch.setattr(agent_module.shutil, "which", lambda name: "/usr/bin/swift")
+
+    alt_bin_dir = tmp_path / "alt-bin"
+    alt_binary = alt_bin_dir / agent_module._EXECUTABLE_NAME
+    alt_bin_dir.mkdir(parents=True, exist_ok=True)
+    alt_binary.write_bytes(b"fake-binary")
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "--show-bin-path" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=str(alt_bin_dir) + "\n", stderr="")
+        # The conventional `.build/release/<name>` path is deliberately
+        # never created here, forcing the fallback.
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(agent_module.subprocess, "run", _fake_run)
+
+    result = agent_module._build_executable()
+
+    assert result == alt_binary
+
+
+# --- _resolve_executable: override / bundled / local-release order ----------
+
+
+def test_resolve_executable_prefers_explicit_override_over_everything(
+    isolated_native_paths: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    override = tmp_path / "override-agent"
+    override.write_bytes(b"binary")
+    override.chmod(0o700)
+    monkeypatch.setenv(agent_module._AGENT_BIN_ENV, str(override))
+    monkeypatch.setattr(
+        agent_module,
+        "_bundled_executable_path",
+        lambda: (_ for _ in ()).throw(AssertionError("bundled tier must not run")),
+    )
+    monkeypatch.setattr(
+        agent_module,
+        "_ensure_local_release",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("local-release tier must not run")),
+    )
+
+    assert agent_module._resolve_executable() == override.resolve()
+
+
+def test_resolve_executable_raises_when_override_path_does_not_exist(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("MACOS_HARNESS_HOME", str(tmp_path))
-    paths = agent_module.agent_paths()
-    assert paths.state_dir == tmp_path
-    assert paths.socket == tmp_path / "agent.sock"
-    assert paths.pid_file == tmp_path / "agent.pid"
-    assert paths.lock_file == tmp_path / "agent.lock"
-    assert paths.log_file == tmp_path / "agent.log"
-    assert agent_module.socket_path() == paths.socket
-    assert agent_module.pid_path() == paths.pid_file
+    missing = tmp_path / "does-not-exist"
+    monkeypatch.setenv(agent_module._AGENT_BIN_ENV, str(missing))
+
+    with pytest.raises(agent_module.AgentUnavailableError, match="MACOS_HARNESS_AGENT_BIN"):
+        agent_module._resolve_executable()
 
 
-# --- status (read-only) --------------------------------------------------------
-
-
-def test_status_reports_not_running_on_fresh_state_dir(fake_lifecycle: Path) -> None:
-    result = agent_module.status()
-    assert result == {
-        "running": False,
-        "pid": None,
-        "agent_version": None,
-        "trusted": None,
-        "socket_path": str(agent_module.socket_path()),
-        "protocol": None,
-        "uptime_s": None,
-    }
-    # status() is read-only: it must not create the state directory.
-    assert not agent_module.state_dir().exists()
-
-
-# --- start ----------------------------------------------------------------------
-
-
-def test_start_creates_secure_state_dir_and_launches_agent(
-    fake_lifecycle: Path,
+def test_resolve_executable_rejects_a_non_executable_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    result = agent_module.start(timeout=5.0)
-    assert result["running"] is True
-    assert result["agent_version"] == "test-fake"
-    assert result["trusted"] is True
-    assert result["protocol"] == 1
-    assert isinstance(result["pid"], int)
+    not_executable = tmp_path / "no-exec-bit"
+    not_executable.write_bytes(b"binary")
+    not_executable.chmod(0o600)
+    monkeypatch.setenv(agent_module._AGENT_BIN_ENV, str(not_executable))
 
-    paths = agent_module.agent_paths()
-    assert paths.state_dir.stat().st_mode & 0o777 == 0o700
-    assert paths.socket.stat().st_mode & 0o777 == 0o600
-    assert _pid_file_contents(paths.pid_file) == result["pid"]
+    with pytest.raises(agent_module.AgentUnavailableError, match="not executable"):
+        agent_module._resolve_executable()
 
 
-def test_start_is_idempotent(fake_lifecycle: Path) -> None:
-    first = agent_module.start(timeout=5.0)
-    assert len(_REGISTRY) == 1
-    second = agent_module.start(timeout=5.0)
-    assert second["pid"] == first["pid"]
-    assert len(_REGISTRY) == 1  # no second agent spawned
+def test_resolve_executable_rejects_a_directory_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    a_directory = tmp_path / "im-a-directory"
+    a_directory.mkdir()
+    monkeypatch.setenv(agent_module._AGENT_BIN_ENV, str(a_directory))
+
+    with pytest.raises(agent_module.AgentUnavailableError, match="regular file"):
+        agent_module._resolve_executable()
 
 
-def test_start_recovers_stale_pidfile_and_socket(fake_lifecycle: Path) -> None:
-    paths = agent_module.agent_paths()
-    paths.state_dir.mkdir(parents=True, exist_ok=True)
-    paths.pid_file.write_text("999999\n")  # not in the fake registry -> reads as dead
-    paths.socket.write_bytes(b"")  # leftover regular file where the socket should be
+def test_resolve_executable_canonicalizes_a_symlinked_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    real_binary = tmp_path / "real-agent"
+    real_binary.write_bytes(b"binary")
+    real_binary.chmod(0o700)
+    link = tmp_path / "link-to-agent"
+    link.symlink_to(real_binary)
+    monkeypatch.setenv(agent_module._AGENT_BIN_ENV, str(link))
 
-    result = agent_module.start(timeout=5.0)
+    resolved = agent_module._resolve_executable()
 
-    assert result["running"] is True
-    assert result["pid"] != 999999
-    assert paths.socket.is_socket()
+    assert resolved == real_binary.resolve()
+    assert resolved != link
 
 
-def test_start_raises_agent_unavailable_when_build_fails(
-    fake_lifecycle: Path, monkeypatch: pytest.MonkeyPatch
+def test_resolve_executable_prefers_bundled_over_local_release(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv(agent_module._AGENT_BIN_ENV, raising=False)
+    bundled = tmp_path / "bundled-agent"
+    bundled.write_bytes(b"binary")
+    bundled.chmod(0o700)
+    monkeypatch.setattr(agent_module, "_bundled_executable_path", lambda: bundled)
+    monkeypatch.setattr(
+        agent_module,
+        "_ensure_local_release",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("local-release tier must not run")),
+    )
+
+    assert agent_module._resolve_executable() == bundled.resolve()
+
+
+def test_resolve_executable_falls_through_to_local_release(
+    isolated_native_paths: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    real_binary = tmp_path / "local-release-agent"
+    real_binary.write_bytes(b"binary")
+    real_binary.chmod(0o700)
+    monkeypatch.setattr(agent_module, "_ensure_local_release", lambda **kw: real_binary)
+
+    assert agent_module._resolve_executable() == real_binary.resolve()
+
+
+def test_resolve_executable_raises_when_nothing_resolves(
+    isolated_native_paths: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(**kwargs: object) -> Path:
+        raise agent_module.AgentUnavailableError("no toolchain")
+
+    monkeypatch.setattr(agent_module, "_build_executable", _boom)
+
+    with pytest.raises(agent_module.AgentUnavailableError, match="no toolchain"):
+        agent_module._resolve_executable()
+
+
+# --- _normalize_child_fd: local child-endpoint fd hygiene -------------------
+
+
+def test_normalize_child_fd_is_a_noop_when_already_at_or_above_min_fd() -> None:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        result = agent_module._normalize_child_fd(sock, min_fd=0)
+        assert result is sock
+    finally:
+        sock.close()
+
+
+def test_normalize_child_fd_duplicates_and_closes_the_original_below_min_fd() -> None:
+    original = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    original_fd = original.fileno()
+
+    normalized = agent_module._normalize_child_fd(original, min_fd=50)
+    try:
+        assert normalized.fileno() >= 50
+        assert normalized.fileno() != original_fd
+        # The low-numbered original fd is really closed, not merely
+        # abandoned -- using it now must fail.
+        with pytest.raises(OSError):
+            os.fstat(original_fd)
+    finally:
+        normalized.close()
+
+
+# --- launch(): real subprocess, real socketpair fd handoff, real wire ------
+
+
+def test_launch_succeeds_verifies_popen_pid_and_closes_cleanly(launch_with) -> None:
+    session = launch_with("ok")
+    try:
+        assert session.process.poll() is None
+        assert session.pid == session.process.pid
+        assert session.client.connected is True
+        assert session.client.ping()["agent_version"] == "fake-e2e"
+    finally:
+        session.close()
+
+    assert session.process.poll() is not None  # reaped, not left running
+    assert session.client.connected is False
+    session.close()  # idempotent
+
+
+def test_launch_raises_agent_unavailable_when_no_executable_resolves(
+    isolated_native_paths: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def _boom(**kwargs: Any) -> Path:
         raise agent_module.AgentUnavailableError("no toolchain")
@@ -249,397 +547,421 @@ def test_start_raises_agent_unavailable_when_build_fails(
     monkeypatch.setattr(agent_module, "_build_executable", _boom)
 
     with pytest.raises(agent_module.AgentUnavailableError, match="no toolchain"):
-        agent_module.start(timeout=2.0)
-
-    paths = agent_module.agent_paths()
-    assert not paths.pid_file.exists()
-    assert not paths.socket.exists()
+        agent_module.launch()
 
 
-def test_start_raises_agent_unavailable_when_never_ready(
-    fake_lifecycle: Path, monkeypatch: pytest.MonkeyPatch
+def test_launch_raises_agent_unavailable_when_the_binary_cannot_be_spawned(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    class _DeadOnArrival:
-        pid = 987654321  # never a real pid; never binds a socket
+    """A resolved path that is a regular, executable-bit-set file but not
+    an actual executable format fails inside ``Popen`` itself -- a
+    pre-handshake, spawn-level ``OSError`` -- not a resolution/permission
+    problem (that's covered by the ``_validate_executable`` tests above)
+    or a build problem."""
+    unusable = tmp_path / "not-a-real-binary"
+    unusable.write_text("#!/nonexistent-interpreter-xyz\nnot a real binary\n")
+    unusable.chmod(0o700)
+    monkeypatch.setenv(agent_module._AGENT_BIN_ENV, str(unusable))
 
-        def terminate(self) -> None:
-            pass
-
-    monkeypatch.setattr(
-        agent_module, "_spawn_process", lambda binary, paths: _DeadOnArrival()
-    )
-
-    with pytest.raises(
-        agent_module.AgentUnavailableError, match="did not become ready"
-    ):
-        agent_module.start(timeout=0.3)
-
-    paths = agent_module.agent_paths()
-    assert not paths.pid_file.exists()
-    assert not paths.socket.exists()
+    with pytest.raises(agent_module.AgentUnavailableError, match="Could not launch"):
+        agent_module.launch(timeout=2.0)
 
 
-def test_concurrent_start_is_serialized_by_the_lock(fake_lifecycle: Path) -> None:
-    paths = agent_module.agent_paths()
-    paths.state_dir.mkdir(parents=True, exist_ok=True)
-    fd = os.open(paths.lock_file, os.O_CREAT | os.O_RDWR, 0o600)
-    fcntl.flock(fd, fcntl.LOCK_EX)
-    try:
-        with pytest.raises(
-            agent_module.AgentUnavailableError, match="Timed out waiting"
-        ):
-            agent_module.start(timeout=0.3)
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
-
-
-# --- stop -------------------------------------------------------------------------
-
-
-def test_stop_terminates_and_removes_socket_and_pidfile(fake_lifecycle: Path) -> None:
-    started = agent_module.start(timeout=5.0)
-    paths = agent_module.agent_paths()
-    assert paths.pid_file.exists()
-    assert paths.socket.exists()
-
-    stopped = agent_module.stop(timeout=5.0)
-
-    assert stopped["running"] is False
-    assert not paths.pid_file.exists()
-    assert not paths.socket.exists()
-    assert started["pid"] not in _REGISTRY
-    assert agent_module.status()["running"] is False
-
-
-def test_stop_is_idempotent_when_never_started(fake_lifecycle: Path) -> None:
-    result = agent_module.stop(timeout=2.0)
-    assert result["running"] is False
-
-
-def test_stop_is_idempotent_when_already_stopped(fake_lifecycle: Path) -> None:
-    agent_module.start(timeout=5.0)
-    agent_module.stop(timeout=5.0)
-    # Calling stop() again on an already-clean state must not raise.
-    result = agent_module.stop(timeout=2.0)
-    assert result["running"] is False
-
-
-# --- ensure_running -----------------------------------------------------------------
-
-
-def test_ensure_running_starts_once_and_reuses_thereafter(fake_lifecycle: Path) -> None:
-    first = agent_module.ensure_running(timeout=5.0)
-    assert first["running"] is True
-    assert len(_REGISTRY) == 1
-
-    second = agent_module.ensure_running(timeout=5.0)
-    assert second["pid"] == first["pid"]
-    assert len(_REGISTRY) == 1
-
-
-def test_ensure_running_propagates_agent_unavailable(
-    fake_lifecycle: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def _boom(**kwargs: Any) -> Path:
-        raise agent_module.AgentUnavailableError("no toolchain")
-
-    monkeypatch.setattr(agent_module, "_build_executable", _boom)
-
+def test_launch_falls_back_eligible_on_eof_before_a_valid_ping(launch_with) -> None:
+    """The child answered by closing the connection outright, without a
+    response -- exactly as unavailable as no agent listening at all."""
     with pytest.raises(agent_module.AgentUnavailableError):
-        agent_module.ensure_running(timeout=2.0)
+        launch_with("eof")
 
 
-# --- _terminate_pid escalation (direct, no fake process needed) ---------------------
+def test_launch_falls_back_eligible_on_timeout_before_a_valid_ping(launch_with) -> None:
+    with pytest.raises(agent_module.AgentUnavailableError):
+        launch_with("hang", timeout=0.3)
 
 
-def test_terminate_pid_escalates_to_sigkill_when_sigterm_is_ignored(
-    monkeypatch: pytest.MonkeyPatch,
+def test_launch_hard_fails_on_pid_mismatch_and_still_reaps_the_child(
+    launch_with, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[tuple[int, int]] = []
+    """A complete, well-formed response *did* come back -- just reporting
+    the wrong pid. That is never fallback-eligible, unlike EOF/timeout."""
+    captured: list[subprocess.Popen] = []
+    real_spawn = agent_module._spawn
 
-    def fake_kill(pid: int, sig: int) -> None:
-        calls.append((pid, sig))
+    def _spy_spawn(binary, child_sock):
+        process = real_spawn(binary, child_sock)
+        captured.append(process)
+        return process
 
-    def fake_alive(pid: int) -> bool:
-        # "Ignores" SIGTERM: stays alive until a SIGKILL has been recorded.
-        return not any(sig == signal.SIGKILL for _, sig in calls)
+    monkeypatch.setattr(agent_module, "_spawn", _spy_spawn)
 
-    monkeypatch.setattr(agent_module.os, "kill", fake_kill)
-    monkeypatch.setattr(agent_module, "_process_alive", fake_alive)
+    with pytest.raises(native_module.NativeProtocolError) as excinfo:
+        launch_with("wrong_pid")
 
-    result = agent_module._terminate_pid(4321, timeout=0.1)
+    assert not isinstance(excinfo.value, native_module.NativeConnectionError)
+    assert not isinstance(excinfo.value, agent_module.AgentUnavailableError)
+    assert len(captured) == 1
+    # The child must already be reaped (or reapable within a beat) -- not
+    # left running because the pid check failed to clean up after itself.
+    captured[0].wait(timeout=2.0)
 
-    assert result is True
-    assert calls[0] == (4321, signal.SIGTERM)
-    assert (4321, signal.SIGKILL) in calls
 
-
-def test_terminate_pid_is_a_noop_when_already_dead(
-    monkeypatch: pytest.MonkeyPatch,
+def test_launch_hard_fails_on_malformed_ping_and_still_reaps_the_child(
+    launch_with, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[tuple[int, int]] = []
+    captured: list[subprocess.Popen] = []
+    real_spawn = agent_module._spawn
+
+    def _spy_spawn(binary, child_sock):
+        process = real_spawn(binary, child_sock)
+        captured.append(process)
+        return process
+
+    monkeypatch.setattr(agent_module, "_spawn", _spy_spawn)
+
+    with pytest.raises(native_module.NativeProtocolError) as excinfo:
+        launch_with("malformed")
+
+    assert not isinstance(excinfo.value, native_module.NativeConnectionError)
+    assert not isinstance(excinfo.value, agent_module.AgentUnavailableError)
+    assert len(captured) == 1
+    captured[0].wait(timeout=2.0)
+
+
+def test_launch_never_leaks_the_child_socket_endpoint(launch_with) -> None:
+    """A second, independent launch works fine -- proves the first launch's
+    child-side fd was actually closed in the parent, not merely dropped."""
+    first = launch_with("ok")
+    try:
+        second = agent_module.launch(timeout=5.0)
+        try:
+            assert second.pid != first.pid
+        finally:
+            second.close()
+    finally:
+        first.close()
+
+
+def test_launch_reraises_a_non_oserror_baseexception_from_spawn_after_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A ``BaseException`` that is not ``OSError`` (e.g. a
+    ``KeyboardInterrupt`` landing mid-spawn) must propagate completely
+    unchanged -- never swallowed or reframed as ``AgentUnavailableError``
+    -- while still closing the parent-side socketpair endpoint already
+    created before the exception hit."""
+    unusable = tmp_path / "whatever"
+    unusable.write_bytes(b"x")
+    unusable.chmod(0o700)
+    monkeypatch.setenv(agent_module._AGENT_BIN_ENV, str(unusable))
+
+    created: list[socket.socket] = []
+    real_socketpair = socket.socketpair
+
+    def _spy_socketpair(*args: object, **kwargs: object) -> tuple[socket.socket, socket.socket]:
+        pair = real_socketpair(*args, **kwargs)
+        created.append(pair[0])
+        return pair
+
+    monkeypatch.setattr(agent_module.socket, "socketpair", _spy_socketpair)
     monkeypatch.setattr(
-        agent_module.os, "kill", lambda pid, sig: calls.append((pid, sig))
+        agent_module,
+        "_spawn",
+        lambda binary, child_sock: (_ for _ in ()).throw(KeyboardInterrupt()),
     )
-    monkeypatch.setattr(agent_module, "_process_alive", lambda pid: False)
 
-    result = agent_module._terminate_pid(4321, timeout=0.1)
+    with pytest.raises(KeyboardInterrupt):
+        agent_module.launch(timeout=2.0)
 
-    assert result is True
-    assert calls == []
-
-
-# --- _process_alive: reap-before-kill -------------------------------------------
+    assert len(created) == 1
+    assert created[0].fileno() == -1  # the parent-side endpoint was closed
 
 
-def test_process_alive_reaps_exited_child_via_waitpid_before_kill_check(
+def test_launch_reraises_a_non_connection_baseexception_from_handshake_and_reaps_child(
+    launch_with, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``BaseException`` from the handshake that is not
+    ``NativeConnectionError`` must propagate unchanged -- never reframed
+    as ``AgentUnavailableError``, which is reserved for
+    ``NativeConnectionError`` alone -- while still reaping the spawned
+    child."""
+    captured: list[subprocess.Popen] = []
+    real_spawn = agent_module._spawn
+
+    def _spy_spawn(binary, child_sock):
+        process = real_spawn(binary, child_sock)
+        captured.append(process)
+        return process
+
+    monkeypatch.setattr(agent_module, "_spawn", _spy_spawn)
+
+    class _SimulatedBug(RuntimeError):
+        pass
+
+    def _boom_connect(self) -> None:
+        raise _SimulatedBug("simulated bug during connect")
+
+    monkeypatch.setattr(native_module.NativeClient, "connect", _boom_connect)
+
+    with pytest.raises(_SimulatedBug):
+        launch_with("ok", timeout=2.0)
+
+    assert len(captured) == 1
+    captured[0].wait(timeout=2.0)
+
+
+def test_terminal_transport_failure_after_handshake_reaps_session_without_explicit_close(
+    launch_with,
+) -> None:
+    """A post-handshake transport failure -- here, the fake agent
+    (in ``hang_after_handshake`` mode) answering the handshake normally
+    but silently absorbing a follow-up request forever, indistinguishable
+    from a crash -- must reap the session's child process on its own via
+    the armed weak hook, without the caller ever calling
+    ``session.close()``."""
+    session = launch_with("hang_after_handshake", timeout=5.0)
+    # Shrink the already-applied socket timeout directly so the
+    # unanswered follow-up request below times out quickly instead of
+    # waiting on the real (5s) request-timeout default.
+    session.client._sock.settimeout(0.3)
+
+    with pytest.raises(native_module.NativeConnectionError):
+        session.client.list_apps()
+
+    # No explicit session.close() anywhere above.
+    session.process.wait(timeout=2.0)
+    assert session.process.poll() is not None
+    assert session.client.connected is False
+
+
+# --- _close_session: cleanup escalation, idempotency, PID scoping ----------
+
+
+class _FakeProcess:
+    """Minimal stand-in for ``subprocess.Popen`` exposing only what
+    ``_close_session`` touches: ``poll``/``wait``/``terminate``/``kill``.
+    """
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.returncode: int | None = None
+        self.terminate_calls = 0
+        self.kill_calls = 0
+        self._exits_on_terminate = False
+        self._exits_on_kill = False
+        self._exited = False
+        self._raise_on_terminate: BaseException | None = None
+        self._raise_on_kill: BaseException | None = None
+
+    def exit_on_terminate(self) -> None:
+        self._exits_on_terminate = True
+
+    def exit_on_kill(self) -> None:
+        self._exits_on_kill = True
+
+    def mark_exited(self) -> None:
+        self._exited = True
+
+    def raise_on_terminate(self, exc: BaseException) -> None:
+        self._raise_on_terminate = exc
+
+    def raise_on_kill(self, exc: BaseException) -> None:
+        self._raise_on_kill = exc
+
+    def poll(self) -> int | None:
+        if self.returncode is None and self._exited:
+            self.returncode = 0
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        # A real `Popen.wait()` actively reaps and captures the exit
+        # status itself -- it does not merely check a cache `poll()`
+        # happens to have populated. Mirror that: `_exited` becoming
+        # True (via `terminate()`/`kill()`/`mark_exited()`) must be
+        # enough for `wait()` alone to observe and report it, with no
+        # intervening `poll()` call required.
+        if self.returncode is None:
+            if self._exited:
+                self.returncode = 0
+            else:
+                raise subprocess.TimeoutExpired(cmd="fake-agent", timeout=timeout or 0.0)
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+        if self._raise_on_terminate is not None:
+            raise self._raise_on_terminate
+        if self._exits_on_terminate:
+            self._exited = True
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        if self._raise_on_kill is not None:
+            raise self._raise_on_kill
+        if self._exits_on_kill:
+            self._exited = True
+
+
+class _FakeClient:
+    def __init__(self, *, on_close=None) -> None:
+        self.close_calls = 0
+        self._on_close = on_close
+
+    def close(self) -> None:
+        self.close_calls += 1
+        if self._on_close is not None:
+            self._on_close()
+
+
+def test_close_session_skips_signaling_a_child_that_exits_on_eof_alone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A child that already exited but was never waited on is a zombie:
-    kill(pid, 0) alone keeps reporting it alive forever. `_process_alive`
-    must call waitpid(WNOHANG) first and trust that over a bare kill
-    probe -- and must not even need to call kill() once waitpid reaps it.
-    """
-    calls: list[str] = []
+    monkeypatch.setattr(agent_module, "_EOF_GRACE_PERIOD", 0.05)
+    process = _FakeProcess(pid=11111)
+    client = _FakeClient(on_close=process.mark_exited)
 
-    def fake_waitpid(pid: int, options: int) -> tuple[int, int]:
-        calls.append("waitpid")
-        assert options == os.WNOHANG
-        return (pid, 0)  # already exited; successfully reaped just now
+    agent_module._close_session(process, client)
 
-    def fake_kill(pid: int, sig: int) -> None:
-        calls.append("kill")
-
-    monkeypatch.setattr(agent_module.os, "waitpid", fake_waitpid)
-    monkeypatch.setattr(agent_module.os, "kill", fake_kill)
-
-    assert agent_module._process_alive(4321) is False
-    assert calls == ["waitpid"]
+    assert client.close_calls == 1
+    assert process.terminate_calls == 0
+    assert process.kill_calls == 0
+    assert process.returncode is not None
 
 
-def test_process_alive_tolerates_a_pid_that_is_not_its_own_child(
+def test_close_session_terminates_a_child_still_alive_after_eof_grace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Most pids `_process_alive` is asked about are not children of this
-    process (e.g. an agent pid merely read from a pidfile, possibly
-    written by an earlier Python process). waitpid(WNOHANG) on a
-    non-child pid raises ChildProcessError, which must be swallowed and
-    fall through to the ordinary kill(pid, 0) probe rather than
-    propagating or misreporting liveness.
-    """
+    monkeypatch.setattr(agent_module, "_EOF_GRACE_PERIOD", 0.05)
+    process = _FakeProcess(pid=22222)
+    process.exit_on_terminate()
+    client = _FakeClient()
 
-    def fake_waitpid(pid: int, options: int) -> tuple[int, int]:
-        raise ChildProcessError(10, "No child processes")
+    agent_module._close_session(process, client, timeout=2.0)
 
-    def fake_kill(pid: int, sig: int) -> None:
-        return None  # process exists and is signalable
-
-    monkeypatch.setattr(agent_module.os, "waitpid", fake_waitpid)
-    monkeypatch.setattr(agent_module.os, "kill", fake_kill)
-
-    assert agent_module._process_alive(4321) is True
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 0
+    assert process.returncode is not None
 
 
-def test_process_alive_does_not_mistake_a_running_child_for_a_reaped_one(
+def test_close_session_escalates_to_kill_when_terminate_is_ignored(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """waitpid(WNOHANG) returns ``(0, 0)`` -- not ``pid`` -- while a real
-    child is still running; that must never be read as "reaped and dead".
-    """
+    monkeypatch.setattr(agent_module, "_EOF_GRACE_PERIOD", 0.05)
+    monkeypatch.setattr(agent_module, "_KILL_GRACE_PERIOD", 0.2)
+    process = _FakeProcess(pid=33333)
+    process.exit_on_kill()
+    client = _FakeClient()
 
-    def fake_waitpid(pid: int, options: int) -> tuple[int, int]:
-        return (0, 0)
+    agent_module._close_session(process, client, timeout=0.05)
 
-    def fake_kill(pid: int, sig: int) -> None:
-        return None
-
-    monkeypatch.setattr(agent_module.os, "waitpid", fake_waitpid)
-    monkeypatch.setattr(agent_module.os, "kill", fake_kill)
-
-    assert agent_module._process_alive(4321) is True
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert process.returncode is not None
 
 
-# --- _read_pid_file: pid <= 1 rejection ------------------------------------------
+def test_close_session_is_fully_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(agent_module, "_EOF_GRACE_PERIOD", 0.05)
+    process = _FakeProcess(pid=44444)
+    process.exit_on_terminate()
+    client = _FakeClient()
+
+    agent_module._close_session(process, client, timeout=2.0)
+    agent_module._close_session(process, client, timeout=2.0)
+
+    assert client.close_calls == 2  # NativeClient.close() is itself a no-op the 2nd time
+    assert process.terminate_calls == 1  # never re-signaled once reaped
+    assert process.kill_calls == 0
 
 
-@pytest.mark.parametrize("raw", ["0", "1", "-1", "-999999"])
-def test_read_pid_file_rejects_pid_le_1(tmp_path: Path, raw: str) -> None:
-    pid_file = tmp_path / "agent.pid"
-    pid_file.write_text(f"{raw}\n", encoding="utf-8")
-    assert agent_module._read_pid_file(pid_file) is None
-
-
-def test_read_pid_file_accepts_a_real_pid(tmp_path: Path) -> None:
-    pid_file = tmp_path / "agent.pid"
-    pid_file.write_text("2\n", encoding="utf-8")
-    assert agent_module._read_pid_file(pid_file) == 2
-
-
-# --- _terminate_pid: revalidate gates the SIGKILL escalation ---------------------
-
-
-def test_terminate_pid_skips_sigkill_when_revalidate_fails(
+def test_close_session_never_signals_a_different_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``revalidate`` is the identity recheck gating the SIGKILL
-    escalation: if it reports the pid no longer verified (e.g. the
-    original process already exited and the kernel handed the pid to
-    something else during the SIGTERM wait), no SIGKILL may be sent.
+    """Cleanup is always scoped to the exact ``Popen`` object it is given
+    -- never a bare pid that could, by construction or coincidence,
+    collide with some other process this call has no business touching.
     """
-    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(agent_module, "_EOF_GRACE_PERIOD", 0.05)
+    target = _FakeProcess(pid=55555)
+    target.exit_on_terminate()
+    unrelated = _FakeProcess(pid=55555)  # same pid value, a distinct object
+    client = _FakeClient()
 
-    def fake_kill(pid: int, sig: int) -> None:
-        calls.append((pid, sig))
+    agent_module._close_session(target, client, timeout=2.0)
 
-    def fake_alive(pid: int) -> bool:
-        # Stays "alive" throughout: SIGTERM is ignored, and nothing ever
-        # sends a SIGKILL to make it exit either.
-        return True
-
-    monkeypatch.setattr(agent_module.os, "kill", fake_kill)
-    monkeypatch.setattr(agent_module, "_process_alive", fake_alive)
-
-    result = agent_module._terminate_pid(4321, timeout=0.1, revalidate=lambda: False)
-
-    assert result is False
-    assert calls == [(4321, signal.SIGTERM)]  # SIGTERM only, never SIGKILL
+    assert target.terminate_calls == 1
+    assert unrelated.terminate_calls == 0
+    assert unrelated.kill_calls == 0
+    assert unrelated.returncode is None
 
 
-def test_terminate_pid_sends_sigkill_when_revalidate_confirms_identity(
+def test_close_session_tolerates_terminate_racing_process_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[int, int]] = []
+    """The child can legitimately exit in the narrow window between our
+    own ``poll()`` check and the ``terminate()`` call itself;
+    ``ProcessLookupError`` from that race must never propagate."""
+    monkeypatch.setattr(agent_module, "_EOF_GRACE_PERIOD", 0.05)
+    process = _FakeProcess(pid=66601)
+    process.raise_on_terminate(ProcessLookupError())
+    client = _FakeClient()
 
-    def fake_kill(pid: int, sig: int) -> None:
-        calls.append((pid, sig))
+    agent_module._close_session(process, client, timeout=0.2)  # must not raise
 
-    def fake_alive(pid: int) -> bool:
-        return not any(sig == signal.SIGKILL for _, sig in calls)
-
-    monkeypatch.setattr(agent_module.os, "kill", fake_kill)
-    monkeypatch.setattr(agent_module, "_process_alive", fake_alive)
-
-    result = agent_module._terminate_pid(4321, timeout=0.1, revalidate=lambda: True)
-
-    assert result is True
-    assert calls[0] == (4321, signal.SIGTERM)
-    assert (4321, signal.SIGKILL) in calls
+    assert process.terminate_calls == 1
 
 
-# --- stop(): identity-gated signaling (stale/reused/mismatched pids) -------------
-
-
-def test_stop_clears_a_zero_or_negative_pidfile_without_signaling_anything(
-    fake_lifecycle: Path,
+def test_close_session_tolerates_kill_racing_process_exit(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths = agent_module.agent_paths()
-    paths.state_dir.mkdir(parents=True, exist_ok=True)
-    paths.pid_file.write_text("0\n", encoding="utf-8")
+    monkeypatch.setattr(agent_module, "_EOF_GRACE_PERIOD", 0.05)
+    process = _FakeProcess(pid=66602)
+    process.raise_on_kill(ProcessLookupError())
+    client = _FakeClient()
 
-    result = agent_module.stop(timeout=2.0)
+    agent_module._close_session(process, client, timeout=0.05)  # must not raise
 
-    assert result["running"] is False
-    assert not paths.pid_file.exists()
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
 
 
-def test_stop_refuses_to_signal_a_stale_reused_pid_with_no_live_agent(
-    fake_lifecycle: Path,
+def test_agent_session_close_delegates_to_close_session(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A pidfile can outlive the agent it named -- the OS is free to hand
-    that exact number to a totally unrelated process later. If nothing is
-    listening on the agent socket to vouch for it, `stop()` must never
-    send that pid a signal, only clear the stale record.
-    """
-    paths = agent_module.agent_paths()
-    paths.state_dir.mkdir(parents=True, exist_ok=True)
-    reused_pid = 424242
-    # Deliberately registered as "alive" -- proving the point that even a
-    # pid a liveness probe would call live is never enough on its own;
-    # only a verified live socket handshake may license a signal.
-    _REGISTRY[reused_pid] = object()
-    paths.pid_file.write_text(f"{reused_pid}\n", encoding="utf-8")
-    try:
-        result = agent_module.stop(timeout=2.0)
+    monkeypatch.setattr(agent_module, "_EOF_GRACE_PERIOD", 0.05)
+    process = _FakeProcess(pid=66666)
+    process.exit_on_terminate()
+    client = _FakeClient()
+    session = agent_module.AgentSession(process=process, client=client)
 
-        assert result["running"] is False
-        assert not paths.pid_file.exists()
-        # `_terminate_pid` (the fake) was never invoked for this pid: it
-        # is still "alive" in the registry because nothing signaled it.
-        assert reused_pid in _REGISTRY
-    finally:
-        _REGISTRY.pop(reused_pid, None)
+    assert session.pid == 66666
+    session.close(timeout=2.0)
+
+    assert client.close_calls == 1
+    assert process.terminate_calls == 1
 
 
-def test_stop_refuses_to_signal_a_stale_reused_pid_behind_an_orphaned_socket(
-    fake_lifecycle: Path,
+def test_agent_session_close_serializes_concurrent_callers(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The more realistic flavor of pid reuse: the crashed agent's own
-    socket file is still sitting on disk, but nothing is listening on it
-    any more, while the pidfile's number now happens to belong to some
-    unrelated, still-alive process.
-    """
-    paths = agent_module.agent_paths()
-    paths.state_dir.mkdir(parents=True, exist_ok=True)
-    reused_pid = 424243
-    _REGISTRY[reused_pid] = object()
-    paths.pid_file.write_text(f"{reused_pid}\n", encoding="utf-8")
-    paths.socket.write_bytes(b"")  # a leftover, non-socket file at the path
-    try:
-        result = agent_module.stop(timeout=2.0)
+    """Two threads racing to close the *same* session must never both
+    observe the child as "still running" and both escalate a signal to
+    it independently."""
+    monkeypatch.setattr(agent_module, "_EOF_GRACE_PERIOD", 0.05)
+    process = _FakeProcess(pid=77777)
+    process.exit_on_terminate()
+    client = _FakeClient()
+    session = agent_module.AgentSession(process=process, client=client)
 
-        assert result["running"] is False
-        assert not paths.pid_file.exists()
-        assert not paths.socket.exists()
-        assert reused_pid in _REGISTRY
-    finally:
-        _REGISTRY.pop(reused_pid, None)
+    barrier = threading.Barrier(2)
 
+    def _close() -> None:
+        barrier.wait(timeout=2.0)
+        session.close(timeout=2.0)
 
-def test_stop_refuses_to_signal_on_live_socket_ping_pid_mismatch(
-    fake_lifecycle: Path,
-) -> None:
-    """A live, real agent is answering on the socket, but its own ping
-    reports a *different* pid than the one the pidfile names -- e.g. a
-    fast restart reused the socket path under a new pid and left the old
-    pidfile behind. `stop()` must not treat "some agent is up" as license
-    to signal whatever pid happens to be on file.
-    """
-    paths = agent_module.agent_paths()
-    paths.state_dir.mkdir(parents=True, exist_ok=True)
-    fake = _FakeLifecycleAgent(paths)
-    stale_pid = fake.pid + 1
-    _REGISTRY[stale_pid] = fake  # `_process_alive(stale_pid)` reads as alive
-    paths.pid_file.write_text(f"{stale_pid}\n", encoding="utf-8")
-    try:
-        result = agent_module.stop(timeout=2.0)
+    threads = [threading.Thread(target=_close) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5.0)
 
-        assert result["running"] is False
-        assert not paths.pid_file.exists()
-        assert not paths.socket.exists()
-        assert stale_pid in _REGISTRY  # never signaled/popped
-    finally:
-        _REGISTRY.pop(stale_pid, None)
-        fake.terminate()
-
-
-def test_stop_signals_when_live_socket_ping_confirms_the_exact_pid(
-    fake_lifecycle: Path,
-) -> None:
-    """The clean, expected case: the pidfile's pid is exactly what the
-    live agent's own ping reports back, so `stop()` proceeds to
-    terminate it -- the mirror image of the mismatch/stale-pid tests
-    above.
-    """
-    paths = agent_module.agent_paths()
-    paths.state_dir.mkdir(parents=True, exist_ok=True)
-    fake = _FakeLifecycleAgent(paths)
-    _REGISTRY[fake.pid] = fake
-    paths.pid_file.write_text(f"{fake.pid}\n", encoding="utf-8")
-
-    result = agent_module.stop(timeout=2.0)
-
-    assert result["running"] is False
-    assert not paths.pid_file.exists()
-    assert not paths.socket.exists()
-    assert fake.pid not in _REGISTRY  # _terminate_pid really ran
+    assert process.terminate_calls == 1
+    assert client.close_calls == 2

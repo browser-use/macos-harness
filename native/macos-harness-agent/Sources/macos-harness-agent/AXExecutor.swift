@@ -24,8 +24,11 @@ final class AXExecutor {
   static let shared = AXExecutor()
 
   /// Serializes every ApplicationServices and NSWorkspace call this process makes, plus every
-  /// `ElementRegistry` mutation performed while producing their results.
-  private static let queue = DispatchQueue(label: "com.macos-harness-agent.ax-executor")
+  /// `ElementRegistry` mutation performed while producing their results. `qos: .userInitiated`
+  /// keeps this queue off the default/background priority band, so a foreground automation
+  /// request is never left waiting behind unrelated low-priority work in this process.
+  private static let queue = DispatchQueue(
+    label: "com.macos-harness-agent.ax-executor", qos: .userInitiated)
 
   private init() {}
 

@@ -11,12 +11,24 @@ permissions:
 
 jobs:
   pypi:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     environment: pypi
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
-      - run: uv build
+      - run: scripts/build-universal-agent.sh
+      - run: uv build --sdist --wheel
+      - name: Verify exactly one universal2 wheel was built from source
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          matches=(dist/*-py3-none-macosx_13_0_universal2.whl)
+          if [[ ${#matches[@]} -ne 1 ]]; then
+            echo "expected exactly one *-py3-none-macosx_13_0_universal2.whl in dist/, found ${#matches[@]}: ${matches[*]}" >&2
+            exit 1
+          fi
+          echo "verified universal2 wheel: ${matches[0]}"
       - uses: pypa/gh-action-pypi-publish@release/v1
