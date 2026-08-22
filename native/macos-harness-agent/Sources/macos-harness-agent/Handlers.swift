@@ -23,7 +23,7 @@ final class AgentHandlers {
 
   /// Mirrors `pyproject.toml`'s `[project].version` at the time this agent was authored;
   /// nothing parses it, it is purely a human-readable `ping` field.
-  private static let agentVersion = "0.1.2"
+  private static let agentVersion = "0.2.0"
 
   /// Matches `_AX_ATTRIBUTES` in `macos.py`: the default attribute set for `ax_query`.
   private static let defaultAttributes = [

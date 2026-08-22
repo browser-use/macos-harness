@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "macos-harness"
-version = "0.1.2"
+dynamic = ["version"]
 description = "The simplest, thinnest harness that gives an LLM complete freedom to control a Mac."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -20,8 +20,11 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Desktop Environment",
   "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
 ]
 dependencies = [
   "browser-harness>=0.1.9",
@@ -43,6 +46,10 @@ macos-harness = "macos_harness.cli:main"
 Homepage = "https://github.com/browser-use/macos-harness"
 Repository = "https://github.com/browser-use/macos-harness"
 Issues = "https://github.com/browser-use/macos-harness/issues"
+Changelog = "https://github.com/browser-use/macos-harness/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/macos_harness/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/macos_harness"]

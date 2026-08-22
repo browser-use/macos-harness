@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 import ApplicationServices as AS
 
-from .macos import _AX_SAFE_ATTRIBUTES, MacOSError
+from .errors import ErrorCode, MacOSError
+from .macos import _AX_SAFE_ATTRIBUTES
 
 if TYPE_CHECKING:
     from .macos import MacOS
@@ -46,7 +47,8 @@ class Accessibility:
             raise MacOSError(
                 "This Accessibility escape hatch's MacOS instance has "
                 "already been closed or garbage collected; construct a "
-                "new MacOS to use mac.ax again"
+                "new MacOS to use mac.ax again",
+                code=ErrorCode.UNSUPPORTED_OP,
             )
         return host
 
@@ -72,7 +74,11 @@ class Accessibility:
             root, point[0], point[1], None
         )
         if error != 0 or element is None:
-            raise RuntimeError(f"AX hit test failed with AXError {error}")
+            raise MacOSError(
+                f"AX hit test failed with AXError {error}",
+                code=ErrorCode.AX_ERROR,
+                details={"ax_error": int(error)},
+            )
         index = self._host._remember_element(element)
         return self._host._describe_element(
             element,
@@ -84,7 +90,11 @@ class Accessibility:
     @staticmethod
     def _search_key(search_key: str | None, role: str | None) -> str:
         if search_key is not None and role is not None:
-            raise MacOSError("Pass role or search_key, not both")
+            raise MacOSError(
+                "Pass role or search_key, not both",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "role/search_key"},
+            )
         if role is None:
             return search_key or "AXAnyTypeSearchKey"
         aliases = {
@@ -112,7 +122,9 @@ class Accessibility:
                 "menu item, radio button, static text, table, text area, text field"
             )
             raise MacOSError(
-                f"Unknown AX role {role!r}; choose one of: {valid}"
+                f"Unknown AX role {role!r}; choose one of: {valid}",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "role", "value": role},
             ) from exc
 
     def query(
@@ -293,8 +305,14 @@ class Accessibility:
             self._host._local_element(element_index), attribute, parameter, None
         )
         if error != 0:
-            raise RuntimeError(
-                f"Parameterized AX read {attribute!r} failed with AXError {error}"
+            raise MacOSError(
+                f"Parameterized AX read {attribute!r} failed with AXError {error}",
+                code=ErrorCode.AX_ERROR,
+                details={
+                    "ax_error": int(error),
+                    "element_index": element_index,
+                    "attribute": attribute,
+                },
             )
         return self._host._jsonable(value)
 

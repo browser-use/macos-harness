@@ -86,7 +86,7 @@ final class PressCoordinatorTests: XCTestCase {
     XCTAssertTrue(performer.invocations.isEmpty)
   }
 
-  func testMultipleMatchesFailsClosedWithoutPerforming() {
+  func testMultipleMatchesFailsClosedWithBadRequestAndCount() {
     let performer = RecordingPerformer()
     let frontmost = ScriptedFrontmost([bystander, bystander])
     let deps = PressCoordinator.Dependencies(
@@ -98,14 +98,19 @@ final class PressCoordinatorTests: XCTestCase {
       guard let agentError = error as? AgentError else {
         return XCTFail("expected an AgentError, got \(error)")
       }
-      // The exact code for "more than one match" is production's call (e.g. element.unknown
-      // or a dedicated ambiguity code); the fail-closed, no-perform contract is what matters.
-      XCTAssertFalse(agentError.code.isEmpty)
+      // Ambiguous (>1 match) is the caller's search criteria being too loose, not an
+      // unknown element and not worth retrying -- it is always `bad_request`, and the
+      // match count stays visible in the message since there is no generic wire "details"
+      // field to carry it separately.
+      XCTAssertEqual(agentError.code, "bad_request")
+      XCTAssertTrue(
+        agentError.message.contains("2"),
+        "expected the match count in the message, got \(agentError.message)")
     }
     XCTAssertTrue(performer.invocations.isEmpty, "an ambiguous match set must never be pressed")
   }
 
-  func testMissingAXPressActionFailsClosedWithoutPerforming() {
+  func testMissingAXPressActionFailsClosedWithUnsupportedOp() {
     let performer = RecordingPerformer()
     let frontmost = ScriptedFrontmost([bystander, bystander])
     let deps = PressCoordinator.Dependencies(
@@ -113,7 +118,10 @@ final class PressCoordinatorTests: XCTestCase {
       frontmostPID: { frontmost.next() },
       performPress: performer.perform
     )
-    XCTAssertThrowsError(try PressCoordinator.run(targetPID: target, deps))
+    // A single, unambiguous match that simply cannot be pressed is `unsupported_op`, not
+    // `element.unknown`: the element was found just fine, it just has no AXPress action.
+    assertAgentErrorCode(
+      try PressCoordinator.run(targetPID: target, deps), equals: "unsupported_op")
     XCTAssertTrue(performer.invocations.isEmpty, "an element without AXPress must not be pressed")
   }
 

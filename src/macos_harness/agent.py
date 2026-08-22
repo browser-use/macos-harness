@@ -325,12 +325,35 @@ class AgentSession:
     #: the *same* session must never both observe the child as "still
     #: running" and both escalate a signal to it independently.
     _close_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+    #: The pid that constructed this session, recorded so ``close()`` can
+    #: tell a forked child's byte-for-byte copy of this object apart from
+    #: the process that actually launched ``process`` -- see ``close()``.
+    _creator_pid: int = field(default_factory=os.getpid, repr=False, compare=False)
 
     @property
     def pid(self) -> int:
         return self.process.pid
 
     def close(self, *, timeout: float = _DEFAULT_CLOSE_TIMEOUT) -> None:
+        """Tear down this session: close the socket, then escalate to a
+        signal if the child does not exit on its own.
+
+        A no-op in a forked child: ``process`` is a ``Popen`` this
+        session's *creator* process spawned, and terminating or killing
+        it from anywhere else would signal a real, unrelated (from this
+        process's point of view) child the parent process still owns and
+        may still be using -- exactly the outcome ``_close_session`` must
+        never cause. ``_close_lock`` may also already be permanently held
+        by a parent thread that does not exist in a forked child;
+        checking pid identity before ever attempting to acquire it turns
+        what would otherwise be a silent, permanent hang into this quiet,
+        immediate return instead. The parent process's own ``MacOS``
+        instance (or its finalizer) tears this exact session down on its
+        own schedule, unaffected by anything a forked child does or does
+        not do here.
+        """
+        if os.getpid() != self._creator_pid:
+            return
         with self._close_lock:
             _close_session(self.process, self.client, timeout=timeout)
 

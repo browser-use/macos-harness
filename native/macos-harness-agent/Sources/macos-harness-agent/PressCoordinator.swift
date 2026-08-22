@@ -25,27 +25,37 @@ enum PressCoordinator {
     let performPress: (ElementDescriptor) throws -> Void
   }
 
-  /// Presses the single AXPress-capable element `deps.search()` reports for `targetPID`.
-  ///
-  /// Throws an `element.unknown` `AgentError` when the search does not settle on exactly one
-  /// match, or when that lone match does not expose `AXPress` — in both cases before
-  /// `performPress` is ever invoked. Once the press is attempted, any error `performPress`
-  /// throws propagates unchanged: a failed press is never reported as a success. A successful
-  /// press that made a background target frontmost throws a `focus.changed` `AgentError`
-  /// despite the press itself already having happened.
+  /// Throws `element.unknown` when the search finds no match at all, `bad_request` when it
+  /// finds more than one (ambiguous — the caller's `search_key`/`text` must narrow further),
+  /// or `unsupported_op` when the single match it does settle on does not expose `AXPress` --
+  /// in all three cases before `performPress` is ever invoked, so a caller retrying only
+  /// `element.unknown` (see `MacOS._native_press` in `macos.py`) never wastes its deadline
+  /// retrying an ambiguous or non-pressable target that another search will never resolve
+  /// any differently. Once the press is attempted, any error `performPress` throws propagates
+  /// unchanged: a failed press is never reported as a success. A successful press that made a
+  /// background target frontmost throws a `focus.changed` `AgentError` despite the press
+  /// itself already having happened.
   static func run(targetPID: pid_t, _ deps: Dependencies) throws -> ElementDescriptor {
     let matches = try deps.search()
-    guard matches.count == 1 else {
+    guard !matches.isEmpty else {
       throw AgentError(
         code: "element.unknown",
         message:
-          "AX press expected exactly one match for pid \(targetPID), found \(matches.count)"
+          "AX press expected exactly one match for pid \(targetPID), found 0"
+      )
+    }
+    guard matches.count == 1 else {
+      throw AgentError(
+        code: "bad_request",
+        message:
+          "AX press expected exactly one match for pid \(targetPID), found "
+          + "\(matches.count) (ambiguous); narrow search_key/text to a unique target"
       )
     }
     let match = matches[0]
     guard match.actions.contains("AXPress") else {
       throw AgentError(
-        code: "element.unknown",
+        code: "unsupported_op",
         message:
           "AX press target does not expose AXPress; available actions: \(match.actions)"
       )

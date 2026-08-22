@@ -35,9 +35,10 @@ import weakref
 from collections.abc import Callable, Iterable
 from typing import Any, Self
 
-from .macos import (
+from .errors import (
     AccessibilityPermissionError,
     ApplicationNotFoundError,
+    ErrorCode,
     FocusChangedError,
     MacOSError,
 )
@@ -131,15 +132,22 @@ def _error_from_payload(response: dict[str, Any]) -> MacOSError:
     error = response.get("error")
     if not isinstance(error, dict):
         return NativeProtocolError(
-            f"Malformed error envelope from native agent: {response!r}"
+            f"Malformed error envelope from native agent: {response!r}",
+            code=ErrorCode.AX_ERROR,
         )
     code = str(error.get("code") or "ax.error")
     message = str(error.get("message") or code)
     ax_error = error.get("ax_error")
+    details: dict[str, object] = {}
     if isinstance(ax_error, int):
         message = f"{message} (AXError {ax_error})"
+        details["ax_error"] = ax_error
     exc_type = _ERROR_CLASSES.get(code, MacOSError)
-    return exc_type(message)
+    # Preserve the wire code verbatim -- including codes with no dedicated
+    # exception subclass (``app.ambiguous``, ``element.unknown``, ...), and
+    # any future code this client does not know about yet -- rather than
+    # coercing to a closed enum and losing forward compatibility.
+    return exc_type(message, code=code, details=details)
 
 
 class _NativeHandle:
@@ -316,17 +324,25 @@ class NativeClient:
 
         The only way this can happen is a ``fork()`` elsewhere in the
         embedding application: the forked child inherits a byte-for-byte
-        copy of this object, including ``self._sock``, without ever
-        having gone through ``__init__`` itself. Checked first, before
-        the "already connected" fast path, so an inherited-but-live
-        socket in a forked child is never silently reused.
+        copy of this object, including ``self._sock`` and ``self._lock``,
+        without ever having gone through ``__init__`` itself. Every caller
+        below (``connect()``, ``_request()``) calls this *before* it ever
+        touches ``self._lock`` -- never from inside a ``with self._lock:``
+        block -- deliberately: if some other thread of the parent process
+        held that lock at the exact instant of ``fork()``, it stays held
+        forever in a forked child (that thread does not exist here to
+        release it), and acquiring it first would hang this check, and
+        everything after it, rather than ever reaching this fail-closed
+        raise.
         """
         pid = os.getpid()
         if pid != self._creator_pid:
             raise NativeProtocolError(
                 f"This NativeClient was created in pid {self._creator_pid} "
                 f"and cannot be used from pid {pid} (a fork boundary was "
-                "crossed); construct a fresh client in this process instead"
+                "crossed); construct a fresh client in this process instead",
+                code=ErrorCode.UNSUPPORTED_OP,
+                details={"creator_pid": self._creator_pid, "pid": pid},
             )
 
     def _arm_terminal_failure_hook(self, hook: Callable[[], None]) -> None:
@@ -365,14 +381,15 @@ class NativeClient:
         handshake even begins — closes that socket before propagating,
         so a partially set up client never leaks its file descriptor.
         """
+        self._check_owner()
         with self._lock:
-            self._check_owner()
             if self._sock is not None:
                 return
             if self._preconnected is None:
                 raise NativeProtocolError(
                     "This client's socket was already consumed and closed; "
-                    "it cannot be reconnected"
+                    "it cannot be reconnected",
+                    code=ErrorCode.UNSUPPORTED_OP,
                 )
             sock = self._preconnected
             self._preconnected = None
@@ -387,14 +404,24 @@ class NativeClient:
                     raise NativeProtocolError(
                         f"Native agent protocol {protocol!r} at {self._label} "
                         f"does not match client protocol {PROTOCOL_VERSION}; "
-                        "refusing to proceed"
+                        "refusing to proceed",
+                        code=ErrorCode.AX_ERROR,
+                        details={
+                            "expected_protocol": PROTOCOL_VERSION,
+                            "actual_protocol": protocol,
+                        },
                     )
                 hello_pid = _exact_pid(hello.get("pid"))
                 if hello_pid != self._expected_pid:
                     raise NativeProtocolError(
                         f"Native agent at {self._label} reported pid "
                         f"{hello.get('pid')!r}, expected {self._expected_pid}; "
-                        "refusing to proceed"
+                        "refusing to proceed",
+                        code=ErrorCode.AX_ERROR,
+                        details={
+                            "expected_pid": self._expected_pid,
+                            "actual_pid": hello.get("pid"),
+                        },
                     )
                 sock.settimeout(self._request_timeout)
             except BaseException:
@@ -402,7 +429,25 @@ class NativeClient:
                 raise
 
     def close(self) -> None:
+        if os.getpid() != self._creator_pid:
+            # Mirrors `_check_owner()`'s reasoning, but never raises: unlike
+            # `connect()`/`_request()` (an attempted *use* of a foreign
+            # client, always a bug worth failing loudly), `close()` is
+            # cleanup, expected to be safe to call unconditionally --
+            # including from a finalizer a forked child never asked to run.
+            # `native.py`'s own `os.register_at_fork` hook already closed
+            # this process's copy of the socket (or there never was a live
+            # one), and `self._lock` may already be permanently held by a
+            # parent thread that does not exist here -- acquiring it for
+            # nothing left to actually clean up could hang this process
+            # forever instead.
+            return
         with self._lock:
+            if self._preconnected is not None:
+                try:
+                    self._preconnected.close()
+                finally:
+                    self._preconnected = None
             if self._sock is not None:
                 try:
                     self._sock.close()
@@ -413,6 +458,7 @@ class NativeClient:
     # --- wire transport ---------------------------------------------------
 
     def _request(self, op: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        self._check_owner()
         with self._lock:
             self.connect()
             return self._dispatch(op, params or {})
@@ -438,40 +484,70 @@ class NativeClient:
         if len(frame) > MAX_LINE_BYTES:
             raise NativeProtocolError(
                 f"Request for {op!r} is {len(frame)} bytes including its "
-                f"newline, over the {MAX_LINE_BYTES} cap"
+                f"newline, over the {MAX_LINE_BYTES} cap",
+                code=ErrorCode.BAD_REQUEST,
+                details={"op": op, "size": len(frame), "limit": MAX_LINE_BYTES},
             )
         try:
             self._sock.sendall(frame)
+        except TimeoutError as exc:
+            self._fail_transport()
+            raise NativeConnectionError(
+                f"Timed out sending {op!r} to the native agent: {exc}",
+                code=ErrorCode.TIMEOUT,
+                details={"op": op, "phase": "send"},
+            ) from exc
         except OSError as exc:
             self._fail_transport()
             raise NativeConnectionError(
-                f"Failed sending {op!r} to the native agent: {exc}"
+                f"Failed sending {op!r} to the native agent: {exc}",
+                code=ErrorCode.AX_ERROR,
+                details={"op": op, "phase": "send"},
             ) from exc
         try:
             raw = self._recv_line()
         except NativeProtocolError:
             self._fail_transport()
             raise
+        except TimeoutError as exc:
+            self._fail_transport()
+            raise NativeConnectionError(
+                f"Timed out reading the {op!r} response: {exc}",
+                code=ErrorCode.TIMEOUT,
+                details={"op": op, "phase": "recv"},
+            ) from exc
         except OSError as exc:
             self._fail_transport()
             raise NativeConnectionError(
-                f"Failed reading the {op!r} response: {exc}"
+                f"Failed reading the {op!r} response: {exc}",
+                code=ErrorCode.AX_ERROR,
+                details={"op": op, "phase": "recv"},
             ) from exc
         try:
             response = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise NativeProtocolError(
-                f"Malformed JSON response to {op!r}: {exc}"
+                f"Malformed JSON response to {op!r}: {exc}",
+                code=ErrorCode.AX_ERROR,
+                details={"op": op},
             ) from exc
         if not isinstance(response, dict):
             raise NativeProtocolError(
-                f"Malformed response shape to {op!r}: {response!r}"
+                f"Malformed response shape to {op!r}: {response!r}",
+                code=ErrorCode.AX_ERROR,
+                details={"op": op},
             )
         if response.get("id") != request_id:
             self._fail_transport()
             raise NativeProtocolError(
                 f"Response id {response.get('id')!r} for {op!r} did not match "
-                f"request id {request_id}; connection desynced"
+                f"request id {request_id}; connection desynced",
+                code=ErrorCode.AX_ERROR,
+                details={
+                    "op": op,
+                    "expected_id": request_id,
+                    "actual_id": response.get("id"),
+                },
             )
         ok = response.get("ok")
         if ok is True:
@@ -480,7 +556,9 @@ class NativeClient:
         if ok is False:
             raise _error_from_payload(response)
         raise NativeProtocolError(
-            f"Malformed response envelope for {op!r}: {response!r}"
+            f"Malformed response envelope for {op!r}: {response!r}",
+            code=ErrorCode.AX_ERROR,
+            details={"op": op},
         )
 
     def _recv_line(self) -> bytes:
@@ -505,12 +583,17 @@ class NativeClient:
             if len(self._recv_buffer) >= MAX_LINE_BYTES:
                 raise NativeConnectionError(
                     f"Native agent response exceeded the {MAX_LINE_BYTES}-byte "
-                    "cap (including its newline) without ever sending one"
+                    "cap (including its newline) without ever sending one",
+                    code=ErrorCode.AX_ERROR,
+                    details={"limit": MAX_LINE_BYTES},
                 )
             room = MAX_LINE_BYTES - len(self._recv_buffer)
             chunk = self._sock.recv(min(_RECV_CHUNK, room))
             if not chunk:
-                raise NativeConnectionError("Native agent closed the connection")
+                raise NativeConnectionError(
+                    "Native agent closed the connection",
+                    code=ErrorCode.AX_ERROR,
+                )
             self._recv_buffer += chunk
 
     # --- element handles ---------------------------------------------------
@@ -523,16 +606,28 @@ class NativeClient:
         can go bad.
         """
         if not isinstance(handle, _NativeHandle):
-            raise MacOSError(f"Not a native element handle: {handle!r}")
+            raise MacOSError(
+                f"Not a native element handle: {handle!r}",
+                code=ErrorCode.ELEMENT_UNKNOWN,
+                details={"handle": repr(handle)},
+            )
         if handle.client is not self:
             raise MacOSError(
                 f"Native element handle {handle.handle!r} belongs to a different "
-                "agent connection"
+                "agent connection",
+                code=ErrorCode.ELEMENT_UNKNOWN,
+                details={"handle": handle.handle},
             )
         if handle.generation != self._generation:
             raise MacOSError(
                 f"Native element handle {handle.handle!r} is stale (agent registry "
-                "reset); take a fresh snapshot first"
+                "reset); take a fresh snapshot first",
+                code=ErrorCode.ELEMENT_UNKNOWN,
+                details={
+                    "handle": handle.handle,
+                    "generation": handle.generation,
+                    "current_generation": self._generation,
+                },
             )
         return handle.handle
 
@@ -546,7 +641,11 @@ class NativeClient:
         result = self._request("list_apps")
         apps = result.get("apps")
         if not isinstance(apps, list):
-            raise NativeProtocolError(f"Malformed list_apps result: {result!r}")
+            raise NativeProtocolError(
+                f"Malformed list_apps result: {result!r}",
+                code=ErrorCode.AX_ERROR,
+                details={"op": "list_apps"},
+            )
         # Trust nothing about wire ordering: sort exactly like the local
         # MacOS.list_apps() so backend parity holds regardless of the
         # agent's own iteration order.
@@ -561,7 +660,11 @@ class NativeClient:
         result = self._request("ax_query", params)
         matches = result.get("matches")
         if not isinstance(matches, list):
-            raise NativeProtocolError(f"Malformed ax_query result: {result!r}")
+            raise NativeProtocolError(
+                f"Malformed ax_query result: {result!r}",
+                code=ErrorCode.AX_ERROR,
+                details={"op": "ax_query"},
+            )
         if resets:
             self._generation += 1
         return matches
@@ -571,7 +674,11 @@ class NativeClient:
         result = self._request("ax_press", params)
         match = result.get("match")
         if not isinstance(match, dict):
-            raise NativeProtocolError(f"Malformed ax_press result: {result!r}")
+            raise NativeProtocolError(
+                f"Malformed ax_press result: {result!r}",
+                code=ErrorCode.AX_ERROR,
+                details={"op": "ax_press"},
+            )
         self._generation += 1
         return match
 
@@ -589,7 +696,11 @@ class NativeClient:
         )
         values = result.get("attributes")
         if not isinstance(values, dict):
-            raise NativeProtocolError(f"Malformed ax_element_get result: {result!r}")
+            raise NativeProtocolError(
+                f"Malformed ax_element_get result: {result!r}",
+                code=ErrorCode.AX_ERROR,
+                details={"op": "ax_element_get"},
+            )
         return values
 
     def set(self, handle: _NativeHandle, attribute: str, value: Any) -> None:

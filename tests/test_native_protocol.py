@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 import macos_harness.native as native_module
+from macos_harness.errors import ErrorCode
 from macos_harness.macos import (
     AccessibilityPermissionError,
     ApplicationNotFoundError,
@@ -101,6 +102,8 @@ class _FakeAgent:
 
     def close(self) -> None:
         with contextlib.suppress(OSError):
+            self.client_sock.close()
+        with contextlib.suppress(OSError):
             self.server_sock.close()
         with contextlib.suppress(RuntimeError):
             self._thread.join(timeout=2.0)
@@ -179,8 +182,13 @@ def test_error_codes_map_to_expected_exception(
     )
     try:
         client = _client(agent)
-        with pytest.raises(expected, match="boom"):
+        with pytest.raises(expected, match="boom") as exc_info:
             client.query({"reset_elements": True})
+        assert exc_info.value.code == code  # exact wire code preserved end-to-end
+        if ax_error is None:
+            assert "ax_error" not in exc_info.value.details
+        else:
+            assert exc_info.value.details["ax_error"] == ax_error
         assert (
             client.connected is True
         )  # error responses don't tear down the connection
@@ -456,12 +464,20 @@ def test_handle_from_different_client_rejected_without_wire_call() -> None:
             socket.AF_UNIX, socket.SOCK_STREAM
         )
         client_b = NativeClient(
-            sock=unused_client, connect_timeout=2.0, request_timeout=2.0, expected_pid=4242
+            sock=unused_client,
+            connect_timeout=2.0,
+            request_timeout=2.0,
+            expected_pid=4242,
         )
-        with pytest.raises(MacOSError, match="different"):
-            client_b.get(handle, "AXValue")
-        assert client_b.connected is False
-        unused_server.close()
+        try:
+            with pytest.raises(MacOSError, match="different") as exc_info:
+                client_b.get(handle, "AXValue")
+            assert exc_info.value.code == ErrorCode.ELEMENT_UNKNOWN
+            assert exc_info.value.details["handle"] == 3
+            assert client_b.connected is False
+        finally:
+            client_b.close()
+            unused_server.close()
     finally:
         agent.close()
 
@@ -495,8 +511,10 @@ def test_full_operation_surface_round_trips() -> None:
         client.perform(handle, "AXPress")
         pressed = client.press({"text": "Not Now"})
         assert pressed == match
-        with pytest.raises(MacOSError, match="stale"):
+        with pytest.raises(MacOSError, match="stale") as exc_info:
             client.get(handle, "AXValue")
+        assert exc_info.value.code == ErrorCode.ELEMENT_UNKNOWN
+        assert exc_info.value.details["handle"] == 11
 
         query_request = json.loads(agent.received[1])
         assert query_request["v"] == PROTOCOL_VERSION
@@ -604,6 +622,16 @@ def test_handshake_rejects_boolean_pid_masquerading_as_pid_one() -> None:
         assert client.connected is False
     finally:
         agent.close()
+
+
+def test_close_before_connect_releases_the_adopted_socket() -> None:
+    server_sock, client_sock = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    client = NativeClient(sock=client_sock, expected_pid=4242)
+    try:
+        client.close()
+        assert client_sock.fileno() == -1
+    finally:
+        server_sock.close()
 
 
 # --- endpoint binding: connect-failure vs. post-dispatch hard failures ----

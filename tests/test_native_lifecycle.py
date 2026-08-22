@@ -965,3 +965,172 @@ def test_agent_session_close_serializes_concurrent_callers(
 
     assert process.terminate_calls == 1
     assert client.close_calls == 2
+
+
+# --- fork safety: never deadlock on an inherited lock, never signal a parent-owned Popen ---
+#
+# Both regressions below run `os.fork()` inside a small helper script launched
+# via `subprocess.run`, never inside the pytest worker process itself. The
+# worker process (this one) has other threads besides the one deliberate
+# lock-holder the scenario needs -- pytest's own capture machinery, etc. --
+# so forking it directly triggers CPython's "process is multi-threaded, fork()
+# may lead to deadlocks" `DeprecationWarning` on every run, unrelated to
+# anything this test is actually checking. A fresh, single-purpose child
+# interpreter has exactly the threads this scenario deliberately starts, and
+# its own `os.fork()` call still exercises the exact same production code
+# against a real fork boundary; only that warning (emitted to the *helper's*
+# own stderr, which the outer test never inspects) is what fork() moving
+# there avoids.
+
+_AGENT_SESSION_FORK_SCRIPT = r'''
+import os
+import sys
+import threading
+import time
+
+import macos_harness.agent as agent_module
+
+
+class _Process:
+    def __init__(self, pid):
+        self.pid = pid
+        self.terminate_calls = 0
+        self.kill_calls = 0
+
+    def poll(self):
+        return None
+
+    def wait(self, timeout=None):
+        return None
+
+    def terminate(self):
+        self.terminate_calls += 1
+
+    def kill(self):
+        self.kill_calls += 1
+
+
+class _Client:
+    def __init__(self):
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+
+
+process = _Process(pid=88888)
+client = _Client()
+session = agent_module.AgentSession(process=process, client=client)
+
+# A background thread holds `_close_lock` across the fork, exactly like a
+# real concurrent `close()` caller could -- the one scenario that would
+# deadlock a forked child if `close()` acquired the lock before checking
+# pid identity first.
+lock_held = threading.Event()
+release_lock = threading.Event()
+
+
+def _hold_lock():
+    with session._close_lock:
+        lock_held.set()
+        release_lock.wait(timeout=5.0)
+
+
+holder = threading.Thread(target=_hold_lock)
+holder.start()
+if not lock_held.wait(timeout=5.0):
+    print("SETUP_FAILED", flush=True)
+    sys.exit(2)
+
+child_pid = os.fork()
+if child_pid == 0:
+    # `close()` on a forked child's copy of this session must return
+    # (never raise) without ever touching `process`/`client` -- nothing
+    # here needs to catch an exception it should never throw in the
+    # first place; an unexpected one crashes this child loudly instead
+    # of being hidden, which os.waitpid() below still observes as a
+    # (non-hanging) exit.
+    start = time.monotonic()
+    session.close(timeout=2.0)
+    elapsed = time.monotonic() - start
+    print(
+        "CHILD_OK elapsed=%.3f terminate=%d kill=%d client_close=%d"
+        % (elapsed, process.terminate_calls, process.kill_calls, client.close_calls),
+        flush=True,
+    )
+    os._exit(0)
+
+deadline = time.monotonic() + 5.0
+exited = False
+status = 0
+while time.monotonic() < deadline:
+    done_pid, status = os.waitpid(child_pid, os.WNOHANG)
+    if done_pid == child_pid:
+        exited = True
+        break
+    time.sleep(0.01)
+
+release_lock.set()
+holder.join(timeout=5.0)
+
+if not exited:
+    os.kill(child_pid, 9)
+    os.waitpid(child_pid, 0)
+    print("CHILD_TIMED_OUT", flush=True)
+    sys.exit(3)
+
+print(
+    "PARENT_VIEW terminate=%d kill=%d child_exit_ok=%s"
+    % (
+        process.terminate_calls,
+        process.kill_calls,
+        os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0,
+    ),
+    flush=True,
+)
+'''
+
+
+def test_agent_session_close_after_fork_never_hangs_or_signals_the_parent_popen() -> None:
+    """A forked child inherits a byte-for-byte copy of a live ``AgentSession``,
+    including a ``_close_lock`` some other thread might hold at the exact
+    instant of ``fork()`` and a ``process`` that names a real pid the child
+    does not actually own. ``close()`` must recognize the fork boundary
+    before ever touching either: no hang waiting on a lock only a
+    now-nonexistent thread could release, and no ``terminate()``/``kill()``
+    aimed at a process this child has no business signaling -- the exact
+    two failure modes ``_close_session`` exists to avoid even *within* one
+    process, now also required *across* a fork. See ``_AGENT_SESSION_FORK_SCRIPT``
+    above for why the fork itself happens in a helper subprocess rather than
+    inline here.
+    """
+    if not hasattr(os, "fork"):
+        pytest.skip("os.fork() is not available on this platform")
+
+    result = subprocess.run(
+        [sys.executable, "-c", _AGENT_SESSION_FORK_SCRIPT],
+        capture_output=True,
+        text=True,
+        timeout=15.0,
+        check=False,
+    )
+
+    assert result.returncode == 0, (
+        f"helper subprocess failed (exit {result.returncode}); "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    lines = {line.split(" ", 1)[0]: line for line in result.stdout.strip().splitlines()}
+
+    assert "CHILD_OK" in lines, result.stdout
+    child_line = lines["CHILD_OK"]
+    assert "terminate=0" in child_line, child_line
+    assert "kill=0" in child_line, child_line
+    assert "client_close=0" in child_line, child_line
+
+    # The parent's own view is completely unaffected: the real (fake)
+    # process it still owns was never signaled by the fork at all.
+    assert "PARENT_VIEW" in lines, result.stdout
+    parent_line = lines["PARENT_VIEW"]
+    assert "terminate=0" in parent_line, parent_line
+    assert "kill=0" in parent_line, parent_line
+    assert "child_exit_ok=True" in parent_line, parent_line

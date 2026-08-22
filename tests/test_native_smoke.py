@@ -11,7 +11,13 @@ from typing import Any
 import pytest
 
 import macos_harness.macos as macos_module
-from macos_harness.macos import AccessibilityPermissionError, MacOS, MacOSError
+from macos_harness.errors import ErrorCode
+from macos_harness.macos import (
+    AccessibilityPermissionError,
+    FocusChangedError,
+    MacOS,
+    MacOSError,
+)
 
 
 class _FakeNativeClient:
@@ -39,6 +45,10 @@ class _FakeNativeClient:
             {"role": "AXButton", "title": "Not Now"}
         ]
         self.press_result: dict[str, Any] = {"role": "AXButton", "title": "Not Now"}
+        # Queue of exceptions `press()` raises (in order) before falling through
+        # to `press_result`; empty by default, so every existing test that never
+        # sets this keeps seeing a single unconditional success.
+        self.press_errors: list[BaseException] = []
 
     def _mint(self) -> int:
         handle = self._next_handle
@@ -55,6 +65,8 @@ class _FakeNativeClient:
 
     def press(self, params: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(("press", params))
+        if self.press_errors:
+            raise self.press_errors.pop(0)
         return {**self.press_result, "handle": self._mint()}
 
     def get(self, handle: Any, attribute: str) -> Any:
@@ -995,3 +1007,166 @@ def test_native_press_round_trip_without_activation() -> None:
                 proc.wait(timeout=5.0)
             except subprocess.TimeoutExpired:
                 proc.kill()
+
+
+def test_native_press_retries_only_on_delayed_appearance(monkeypatch) -> None:
+    """A native targeted press that finds no unique match yet -- the
+    agent's own ``PressCoordinator`` always reports this as
+    ``element.unknown`` before ``AXPress`` is ever dispatched -- is
+    retried until the deadline, exactly mirroring the local ``ax_wait``
+    retry shape instead of failing on the first empty search."""
+    client = _FakeNativeClient()
+    client.press_errors = [
+        MacOSError(
+            "AX press expected exactly one match for pid 55, found 0",
+            code=ErrorCode.ELEMENT_UNKNOWN,
+        ),
+        MacOSError(
+            "AX press expected exactly one match for pid 55, found 0",
+            code=ErrorCode.ELEMENT_UNKNOWN,
+        ),
+    ]
+    client.press_result = {"role": "AXButton", "title": "Not Now"}
+    mac = MacOS(backend="native")
+    monkeypatch.setattr(mac, "_acquire_native", lambda: client)
+    monkeypatch.setattr(mac, "_pid", lambda app: 55)
+    monkeypatch.setattr(macos_module.time, "sleep", lambda seconds: None)
+
+    match = mac.ax_press(app="Chrome", text="Not Now", timeout=1.0, interval=0.01)
+
+    assert match["title"] == "Not Now"
+    assert [call[0] for call in client.calls] == ["press", "press", "press"]
+
+
+def test_native_press_gives_up_with_a_timeout_code_once_the_deadline_passes(
+    monkeypatch,
+) -> None:
+    """A single ``element.unknown`` with ``timeout=0`` is promoted to a
+    dedicated ``timeout`` error -- the same machine-readable outcome
+    ``ax_wait`` reports for the local backend -- rather than surfacing
+    the raw last search failure, and never retries past the deadline."""
+    client = _FakeNativeClient()
+    client.press_errors = [
+        MacOSError(
+            "AX press expected exactly one match for pid 55, found 0",
+            code=ErrorCode.ELEMENT_UNKNOWN,
+        ),
+    ]
+    mac = MacOS(backend="native")
+    monkeypatch.setattr(mac, "_acquire_native", lambda: client)
+    monkeypatch.setattr(mac, "_pid", lambda app: 55)
+    monkeypatch.setattr(macos_module.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(MacOSError, match="timed out") as exc_info:
+        mac.ax_press(app="Chrome", text="Not Now", timeout=0, interval=0.01)
+
+    assert exc_info.value.code == ErrorCode.TIMEOUT
+    assert exc_info.value.details["timeout"] == 0
+    assert [call[0] for call in client.calls] == ["press"]  # timeout=0 still tries once
+
+
+def test_native_press_never_retries_after_a_possibly_applied_failure(monkeypatch) -> None:
+    """Any native press failure other than a pre-dispatch
+    ``element.unknown`` -- here ``focus.changed``, reported only after
+    the agent's own ``AXPress`` already ran -- propagates immediately:
+    retrying could fire the action a second time."""
+    client = _FakeNativeClient()
+    client.press_errors = [
+        FocusChangedError("Process 55 became frontmost during AX press; stopped")
+    ]
+    mac = MacOS(backend="native")
+    monkeypatch.setattr(mac, "_acquire_native", lambda: client)
+    monkeypatch.setattr(mac, "_pid", lambda app: 55)
+    monkeypatch.setattr(
+        macos_module.time,
+        "sleep",
+        lambda seconds: pytest.fail("must not retry a possibly-applied failure"),
+    )
+
+    with pytest.raises(FocusChangedError, match="became frontmost"):
+        mac.ax_press(app="Chrome", text="Not Now", timeout=5.0)
+
+    assert [call[0] for call in client.calls] == ["press"]
+
+
+def test_native_press_never_retries_an_ambiguous_match(monkeypatch) -> None:
+    """A native press whose search settles on more than one match is
+    ``bad_request`` -- an ambiguous target, not an unknown one -- and
+    retrying could never resolve it: the same search criteria will find
+    the same matches again. Propagates on the very first call, exactly
+    like ``focus.changed``, spending none of the caller's timeout."""
+    client = _FakeNativeClient()
+    client.press_errors = [
+        MacOSError(
+            "AX press expected exactly one match for pid 55, found 2 (ambiguous)",
+            code=ErrorCode.BAD_REQUEST,
+            details={"count": 2},
+        )
+    ]
+    mac = MacOS(backend="native")
+    monkeypatch.setattr(mac, "_acquire_native", lambda: client)
+    monkeypatch.setattr(mac, "_pid", lambda app: 55)
+    monkeypatch.setattr(
+        macos_module.time,
+        "sleep",
+        lambda seconds: pytest.fail("must not retry an ambiguous match"),
+    )
+
+    with pytest.raises(MacOSError, match="ambiguous") as exc_info:
+        mac.ax_press(app="Chrome", text="Not Now", timeout=5.0)
+
+    assert exc_info.value.code == ErrorCode.BAD_REQUEST
+    assert exc_info.value.details["count"] == 2
+    assert [call[0] for call in client.calls] == ["press"]
+
+
+def test_native_press_never_retries_a_nonpressable_match(monkeypatch) -> None:
+    """A native press whose unique match has no ``AXPress`` action is
+    ``unsupported_op``: the element was found just fine, and retrying
+    the same search will find the same unpressable element again, so
+    this also propagates on the very first call."""
+    client = _FakeNativeClient()
+    client.press_errors = [
+        MacOSError(
+            "AX press target does not expose AXPress; available actions: ['AXShowMenu']",
+            code=ErrorCode.UNSUPPORTED_OP,
+        )
+    ]
+    mac = MacOS(backend="native")
+    monkeypatch.setattr(mac, "_acquire_native", lambda: client)
+    monkeypatch.setattr(mac, "_pid", lambda app: 55)
+    monkeypatch.setattr(
+        macos_module.time,
+        "sleep",
+        lambda seconds: pytest.fail("must not retry a non-pressable match"),
+    )
+
+    with pytest.raises(MacOSError, match="does not expose AXPress") as exc_info:
+        mac.ax_press(app="Chrome", text="Not Now", timeout=5.0)
+
+    assert exc_info.value.code == ErrorCode.UNSUPPORTED_OP
+    assert [call[0] for call in client.calls] == ["press"]
+
+
+def test_ax_press_validates_timeout_and_interval_before_backend_dispatch(
+    monkeypatch,
+) -> None:
+    """Timeout/interval validation happens once, before either backend
+    branch runs -- native and local callers see the identical rejection
+    without ever touching the native agent."""
+    mac = MacOS(backend="native")
+    monkeypatch.setattr(
+        mac,
+        "_acquire_native",
+        lambda: pytest.fail("must not reach the native backend"),
+    )
+
+    with pytest.raises(MacOSError, match="timeout") as exc_info:
+        mac.ax_press(app="Chrome", text="Not Now", timeout=-1)
+    assert exc_info.value.code == ErrorCode.BAD_REQUEST
+    assert exc_info.value.details["parameter"] == "timeout"
+
+    with pytest.raises(MacOSError, match="interval") as exc_info:
+        mac.ax_press(app="Chrome", text="Not Now", interval=0)
+    assert exc_info.value.code == ErrorCode.BAD_REQUEST
+    assert exc_info.value.details["parameter"] == "interval"

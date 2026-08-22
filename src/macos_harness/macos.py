@@ -8,6 +8,7 @@ the semantic tree/actions; Core Graphics supplies raw input; the system
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import struct
@@ -22,6 +23,13 @@ from typing import TYPE_CHECKING, Any, Self
 
 from PIL import Image, ImageDraw
 
+from .errors import (
+    AccessibilityPermissionError,
+    ApplicationNotFoundError,
+    ErrorCode,
+    FocusChangedError,
+    MacOSError,
+)
 from .overlay import LivePointerOverlay
 from .pointer import POINTER_HOTSPOT, pointer_points
 
@@ -43,22 +51,6 @@ except ImportError as exc:  # pragma: no cover - exercised on non-macOS hosts
     _IMPORT_ERROR: ImportError | None = exc
 else:
     _IMPORT_ERROR = None
-
-
-class MacOSError(RuntimeError):
-    """Base error for macOS discovery or control failures."""
-
-
-class AccessibilityPermissionError(MacOSError):
-    """The calling process lacks macOS Accessibility permission."""
-
-
-class ApplicationNotFoundError(MacOSError):
-    """No running application matches a caller-provided selector."""
-
-
-class FocusChangedError(MacOSError):
-    """A background-targeted action made its target frontmost."""
 
 
 _AX_SUCCESS = 0
@@ -261,11 +253,48 @@ _SHIFTED_CHARACTERS = dict(
 )
 
 
+def _parse_key(key: str) -> tuple[int, tuple[tuple[int, int], ...]]:
+    parts = [part.casefold() for part in re.split(r"[+-]", key) if part]
+    if not parts:
+        raise MacOSError(
+            "Key must not be empty",
+            code=ErrorCode.BAD_REQUEST,
+            details={"parameter": "key"},
+        )
+    base = parts[-1]
+    try:
+        keycode = _KEYCODES[base]
+    except KeyError as exc:
+        raise MacOSError(
+            f"Unsupported key {base!r}; use mac.type() for arbitrary text",
+            code=ErrorCode.BAD_REQUEST,
+            details={"parameter": "key", "value": base},
+        ) from exc
+
+    parsed_modifiers: list[tuple[int, int]] = []
+    seen_keycodes: set[int] = set()
+    for modifier in parts[:-1]:
+        try:
+            modifier_keycode = _MODIFIER_KEYCODES[modifier]
+            modifier_flag = _MODIFIER_FLAGS[modifier]
+        except KeyError as exc:
+            raise MacOSError(
+                f"Unsupported modifier {modifier!r}",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "modifier", "value": modifier},
+            ) from exc
+        if modifier_keycode not in seen_keycodes:
+            seen_keycodes.add(modifier_keycode)
+            parsed_modifiers.append((modifier_keycode, modifier_flag))
+    return keycode, tuple(parsed_modifiers)
+
+
 def _require_macos() -> None:
     if AS is None or NSWorkspace is None:
         raise MacOSError(
             "macOS ApplicationServices bindings are unavailable. Run on macOS "
-            "after installing project dependencies with `uv sync`."
+            "after installing project dependencies with `uv sync`.",
+            code=ErrorCode.AX_ERROR,
         ) from _IMPORT_ERROR
 
 
@@ -278,12 +307,20 @@ def _png_size(path: Path) -> tuple[int, int]:
     with path.open("rb") as handle:
         header = handle.read(24)
     if len(header) < 24 or header[:8] != b"\x89PNG\r\n\x1a\n":
-        raise MacOSError(f"Screenshot is not a PNG: {path}")
+        raise MacOSError(
+            f"Screenshot is not a PNG: {path}",
+            code=ErrorCode.AX_ERROR,
+            details={"path": str(path)},
+        )
     return struct.unpack(">II", header[16:24])
 
 
-def _ax_error(operation: str, error: int) -> MacOSError:
-    return MacOSError(f"{operation} failed with AXError {error}")
+def _ax_error(operation: str, error: int, **details: object) -> MacOSError:
+    return MacOSError(
+        f"{operation} failed with AXError {error}",
+        code=ErrorCode.AX_ERROR,
+        details={"ax_error": int(error), "operation": operation, **details},
+    )
 
 
 _BACKENDS = ("python", "native", "auto")
@@ -296,7 +333,9 @@ def _resolve_backend(backend: str | None) -> str:
     normalized = str(backend).strip().casefold() or "python"
     if normalized not in _BACKENDS:
         raise MacOSError(
-            f"Unknown backend {normalized!r}; choose one of: {', '.join(_BACKENDS)}"
+            f"Unknown backend {normalized!r}; choose one of: {', '.join(_BACKENDS)}",
+            code=ErrorCode.BAD_REQUEST,
+            details={"parameter": "backend", "value": normalized},
         )
     return normalized
 
@@ -346,6 +385,44 @@ def _finalize_native_session(session_box: list[Any | None]) -> None:
         session.close()
 
 
+#: Every ``MacOS`` instance that might still hold a live native-agent
+#: finalizer, tracked weakly so this registry never keeps an instance (or
+#: anything it in turn keeps alive) reachable a moment longer than it
+#: otherwise would be. Exists solely so a ``fork()`` elsewhere in the
+#: embedding process can disarm every copied instance's finalizer before
+#: any of the child's own code resumes -- see
+#: ``_disarm_inherited_native_state_after_fork`` below.
+_live_macos_instances: weakref.WeakSet[MacOS] = weakref.WeakSet()
+
+
+def _disarm_inherited_native_state_after_fork() -> None:
+    """Disarm every live ``MacOS`` instance's copied native-session
+    finalizer in a freshly forked child, before any of the child's own
+    code resumes.
+
+    Registered once, process-wide, via ``os.register_at_fork`` below.
+    Runs with exactly one thread alive (the thread that called
+    ``fork()``), so it deliberately never acquires any instance's own
+    ``_native_lock`` -- some *other* thread could have held it at the
+    exact moment of ``fork()``, and that thread does not exist in this
+    child at all. ``weakref.finalize.detach()`` marks a finalizer dead
+    without ever invoking its callback: the ``AgentSession`` this child
+    inherited a copy of is never closed, signaled, or otherwise touched
+    from here -- it is the *parent* process's child to tear down, on the
+    parent's own schedule. ``MacOS._check_native_owner`` independently
+    fails closed if this child's own code goes on to use the inherited
+    native state anyway (``close()``, ``_acquire_native()``), and
+    ``native.py``'s own ``os.register_at_fork`` hook independently slams
+    shut every live ``NativeClient``'s raw socket the same way.
+    """
+    for instance in list(_live_macos_instances):
+        instance._native_finalizer.detach()
+
+
+if hasattr(os, "register_at_fork"):  # pragma: no branch - always true on macOS
+    os.register_at_fork(after_in_child=_disarm_inherited_native_state_after_fork)
+
+
 class MacOS:
     """Low-level macOS observation and control for one persistent process."""
 
@@ -358,13 +435,18 @@ class MacOS:
         self._last_screenshot: dict[str, Any] | None = None
         self._event_source = AS.CGEventSourceCreate(AS.kCGEventSourceStatePrivate)
         if self._event_source is None:
-            raise MacOSError("Could not create a private Core Graphics event source")
+            raise MacOSError(
+                "Could not create a private Core Graphics event source",
+                code=ErrorCode.AX_ERROR,
+            )
 
         from .controls import Accessibility
+        from .ops import Operations
 
         self._pointer_position: tuple[float, float] | None = None
         self._overlay = LivePointerOverlay()
         self.ax = Accessibility(self)
+        self.do = Operations(self)
         self._backend = _resolve_backend(backend)
         self._native_client: NativeClient | None = None
         self._native_error: Exception | None = None
@@ -378,6 +460,36 @@ class MacOS:
         self._native_finalizer = weakref.finalize(
             self, _finalize_native_session, self._native_session_box
         )
+        # See `_check_native_owner` below: a forked child inherits a
+        # byte-for-byte copy of this instance, including `_native_lock`,
+        # without ever going through `__init__` again -- recorded here so
+        # every later native-session entry point can tell.
+        self._creator_pid = os.getpid()
+        _live_macos_instances.add(self)
+
+    def _check_native_owner(self) -> None:
+        """Fail closed before touching ``_native_lock`` from a forked child.
+
+        Called first thing by every method that acquires ``_native_lock``
+        (``close()``, ``_resolved_native_client()`` on behalf of
+        ``_acquire_native()``) -- never from inside the ``with
+        self._native_lock:`` block itself. If some other thread of the
+        parent process held that lock at the exact instant of a
+        ``fork()`` elsewhere in the embedding application, it stays held
+        forever in a forked child (that thread does not exist here to
+        release it); checking ownership before ever attempting to
+        acquire it turns what would otherwise be a silent, permanent
+        hang into this immediate, explicit error instead.
+        """
+        pid = os.getpid()
+        if pid != self._creator_pid:
+            raise MacOSError(
+                f"This MacOS instance was created in pid {self._creator_pid} "
+                f"and cannot be used from pid {pid} (a fork boundary was "
+                "crossed); construct a fresh MacOS in this process instead",
+                code=ErrorCode.UNSUPPORTED_OP,
+                details={"creator_pid": self._creator_pid, "pid": pid},
+            )
 
     def close(self) -> None:
         """Tear down this instance's private native agent child, if any.
@@ -391,7 +503,16 @@ class MacOS:
         again. Also runs automatically, via the same finalizer this calls
         directly, if this instance becomes unreachable or the interpreter
         exits without an explicit ``close()``.
+
+        Raises if called on a forked child's inherited copy of this
+        instance (see ``_check_native_owner``); the automatic finalizer
+        path a fork alone triggers is never affected by this raise, since
+        ``_disarm_inherited_native_state_after_fork`` (module level, see
+        above) already detaches every live instance's finalizer in the
+        child before any of its own code -- including this method -- ever
+        runs.
         """
+        self._check_native_owner()
         with self._native_lock:
             self._native_closed = True
             self._native_client = None
@@ -489,14 +610,23 @@ class MacOS:
             and int(after["pid"]) == target_pid
         ):
             raise FocusChangedError(
-                f"{after['name']} became frontmost during {operation}; stopped"
+                f"{after['name']} became frontmost during {operation}; stopped",
+                details={
+                    "operation": operation,
+                    "target_pid": target_pid,
+                    "frontmost": after,
+                },
             )
 
     def _resolve_app(self, query: str | int | None) -> tuple[Any, dict[str, Any]]:
         if not query and self._last_app:
             query = self._last_app["pid"]
         if not query:
-            raise MacOSError("Specify an app name, bundle ID, path, or PID")
+            raise MacOSError(
+                "Specify an app name, bundle ID, path, or PID",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "app"},
+            )
 
         if isinstance(query, int):
             # An exact pid resolves directly against the process table --
@@ -508,7 +638,10 @@ class MacOS:
             # as an artifact of when this process last observed a change).
             app = NSRunningApplication.runningApplicationWithProcessIdentifier_(query)
             if app is None or app.isTerminated():
-                raise ApplicationNotFoundError(f"No running application matches {query!r}")
+                raise ApplicationNotFoundError(
+                    f"No running application matches {query!r}",
+                    details={"query": query},
+                )
             return app, self._app_info(app)
 
         needle = str(query).casefold()
@@ -525,12 +658,22 @@ class MacOS:
 
         matches = exact or candidates
         if not matches:
-            raise ApplicationNotFoundError(f"No running application matches {query!r}")
+            raise ApplicationNotFoundError(
+                f"No running application matches {query!r}",
+                details={"query": query},
+            )
         if len(matches) > 1:
             names = ", ".join(
                 f"{item[1]['name']} ({item[1]['pid']})" for item in matches[:8]
             )
-            raise MacOSError(f"Application query {query!r} is ambiguous: {names}")
+            raise MacOSError(
+                f"Application query {query!r} is ambiguous: {names}",
+                code=ErrorCode.APP_AMBIGUOUS,
+                details={
+                    "query": query,
+                    "matches": [info for _, info in matches],
+                },
+            )
         return matches[0]
 
     # --- AX tree ---------------------------------------------------------
@@ -540,7 +683,8 @@ class MacOS:
             raise AccessibilityPermissionError(
                 "Accessibility permission is required. Grant it to the terminal or "
                 "agent host in System Settings → Privacy & Security → Accessibility, "
-                "or call mac.request_accessibility_permission() to show Apple's prompt."
+                "or call mac.request_accessibility_permission() to show Apple's prompt.",
+                details={"permission": "accessibility"},
             )
 
     def _ensure_screen_recording(self) -> None:
@@ -548,14 +692,16 @@ class MacOS:
             raise AccessibilityPermissionError(
                 "Screen Recording permission is required. Grant it to the terminal "
                 "or agent host in System Settings → Privacy & Security → Screen & "
-                "System Audio Recording, or call mac.request_permissions()."
+                "System Audio Recording, or call mac.request_permissions().",
+                details={"permission": "screen_recording"},
             )
 
     def _ensure_post_events(self) -> None:
         if self._preflight_permission("CGPreflightPostEventAccess") is False:
             raise AccessibilityPermissionError(
                 "Permission to post input events is required. Grant control access "
-                "to the terminal or agent host, or call mac.request_permissions()."
+                "to the terminal or agent host, or call mac.request_permissions().",
+                details={"permission": "post_events"},
             )
 
     @staticmethod
@@ -569,7 +715,7 @@ class MacOS:
         if messaging_timeout is not None:
             error = AS.AXUIElementSetMessagingTimeout(root, messaging_timeout)
             if error != _AX_SUCCESS:
-                raise _ax_error("Set AX messaging timeout", error)
+                raise _ax_error("Set AX messaging timeout", error, pid=pid)
         if not enhance:
             return root
         error, enhanced = AS.AXUIElementCopyAttributeValue(
@@ -632,9 +778,38 @@ class MacOS:
             return False
 
     @staticmethod
-    def _jsonable(value: Any) -> Any:
-        if value is None or isinstance(value, (str, int, float, bool)):
+    def _finite_float(value: float, *, field: str | None = None) -> float:
+        """Coerce ``value`` to a JSON-safe finite ``float``.
+
+        ``AXValueGetValue`` and plain AX attribute reads can hand back a
+        NaN or infinity (a mis-measured element geometry, a stale layout
+        pass, ...); those have no JSON representation and
+        ``Receipt.canonicalize`` raises ``ValueError`` on them well after
+        the fact, with no machine-readable code. Reject them here, the
+        single place raw AX values become ``dict``/``list``/scalar JSON
+        values, so every caller -- ``mac.do``, snapshotting, attribute
+        reads -- gets a structured ``MacOSError`` before the value ever
+        reaches a ``Receipt``.
+        """
+        value = float(value)
+        if math.isfinite(value):
             return value
+        details: dict[str, object] = {"value": str(value)}
+        if field is not None:
+            details["field"] = field
+        raise MacOSError(
+            "Accessibility API returned a non-finite value with no JSON "
+            "representation",
+            code=ErrorCode.AX_ERROR,
+            details=details,
+        )
+
+    @staticmethod
+    def _jsonable(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, bool)):
+            return value
+        if isinstance(value, float):
+            return MacOS._finite_float(value)
         if isinstance(value, bytes):
             return value.decode("utf-8", errors="replace")
         if isinstance(value, (list, tuple)):
@@ -665,15 +840,21 @@ class MacOS:
             return str(value)
         kind, fields = spec
         if kind == "point":
-            return {"x": float(decoded.x), "y": float(decoded.y)}
+            return {
+                "x": MacOS._finite_float(decoded.x, field="x"),
+                "y": MacOS._finite_float(decoded.y, field="y"),
+            }
         if kind == "size":
-            return {"width": float(decoded.width), "height": float(decoded.height)}
+            return {
+                "width": MacOS._finite_float(decoded.width, field="width"),
+                "height": MacOS._finite_float(decoded.height, field="height"),
+            }
         if kind == "rect":
             return {
-                "x": float(decoded.origin.x),
-                "y": float(decoded.origin.y),
-                "width": float(decoded.size.width),
-                "height": float(decoded.size.height),
+                "x": MacOS._finite_float(decoded.origin.x, field="x"),
+                "y": MacOS._finite_float(decoded.origin.y, field="y"),
+                "width": MacOS._finite_float(decoded.size.width, field="width"),
+                "height": MacOS._finite_float(decoded.size.height, field="height"),
             }
         return {field: int(getattr(decoded, field)) for field in fields}
 
@@ -831,7 +1012,6 @@ class MacOS:
             "text": self._render_tree(nodes, truncated=len(nodes) >= max_nodes),
             "windows": self._last_windows,
         }
-        self._last_screenshot = None
         if screenshot:
             try:
                 self._last_screenshot = self.capture_screenshot(
@@ -854,7 +1034,9 @@ class MacOS:
             return self._elements[int(element_index)]
         except (KeyError, ValueError) as exc:
             raise MacOSError(
-                f"Unknown element index {element_index!r}; take a fresh snapshot first"
+                f"Unknown element index {element_index!r}; take a fresh snapshot first",
+                code=ErrorCode.ELEMENT_UNKNOWN,
+                details={"element_index": element_index},
             ) from exc
 
     def _remember_element(self, element: Any) -> int:
@@ -869,7 +1051,9 @@ class MacOS:
         if not self._is_ax_element(element):
             raise MacOSError(
                 f"Element {element_index} is a native agent handle; this "
-                "operation is local-only and unsupported for native handles"
+                "operation is local-only and unsupported for native handles",
+                code=ErrorCode.UNSUPPORTED_OP,
+                details={"element_index": element_index},
             )
         return element
 
@@ -878,21 +1062,27 @@ class MacOS:
         ``_UNRESOLVED`` when a fresh ``agent.launch()`` attempt is still
         needed.
 
-        Raises directly for the three states that must never fall through
-        to another launch attempt: this instance's ``close()`` already
-        ran, ``backend == "native"`` already knows the agent is
-        unavailable from an earlier call, or ``backend == "auto"`` has a
-        cached failure that is not an ``AgentUnavailableError`` (a hard
-        handshake/protocol mismatch never becomes fallback-eligible just
-        because a later call asks again).
+        Raises directly for the four states that must never fall through
+        to another launch attempt: this call crossed a fork boundary (see
+        ``_check_native_owner``, checked first so a forked child's copy
+        of ``_native_client`` is never silently handed back to it), this
+        instance's ``close()`` already ran, ``backend == "native"``
+        already knows the agent is unavailable from an earlier call, or
+        ``backend == "auto"`` has a cached failure that is not an
+        ``AgentUnavailableError`` (a hard handshake/protocol mismatch
+        never becomes fallback-eligible just because a later call asks
+        again).
         """
+        self._check_native_owner()
         if self._native_client is not None:
             return self._native_client
         if self._native_closed:
             raise MacOSError(
                 "This MacOS instance's close() already tore down its "
                 f"native agent child; construct a new MacOS to use "
-                f"backend={self._backend!r} again"
+                f"backend={self._backend!r} again",
+                code=ErrorCode.UNSUPPORTED_OP,
+                details={"backend": self._backend},
             )
         if self._native_error is not None:
             from . import agent
@@ -1036,7 +1226,20 @@ class MacOS:
         immediate_descendants_only: bool,
         attributes: Iterable[str],
         max_nodes: int,
+        timeout: float,
+        interval: float,
     ) -> dict[str, Any]:
+        """Press via the agent, retrying only a not-yet-unique match.
+
+        Mirrors ``ax_wait``'s own deadline/retry shape: ``element.unknown``
+        is the one outcome ``PressCoordinator`` (agent-side) guarantees
+        happens before any ``AXPress`` is ever dispatched, so it is the
+        only failure retried here, from one monotonic deadline. Every
+        other code -- ``focus.changed`` (the press already happened),
+        ``permission.accessibility``, or any transport/protocol failure
+        whose relation to dispatch is unknown -- propagates immediately:
+        retrying those could fire ``AXPress`` a second time.
+        """
         self._elements = {}
         params = {
             "app_pid": pid,
@@ -1053,7 +1256,23 @@ class MacOS:
             "messaging_timeout": None,
             "enhance": True,
         }
-        return self._intern_native_match(client.press(params), client)
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                match = client.press(params)
+            except MacOSError as exc:
+                if exc.code != ErrorCode.ELEMENT_UNKNOWN.value:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise MacOSError(
+                        "AX press timed out without a unique match",
+                        code=ErrorCode.TIMEOUT,
+                        details={"timeout": timeout, "pid": pid},
+                    ) from exc
+                time.sleep(min(interval, remaining))
+                continue
+            return self._intern_native_match(match, client)
 
     def _describe_element(
         self,
@@ -1098,7 +1317,12 @@ class MacOS:
             return element.client.get(element, attribute)
         error, value = AS.AXUIElementCopyAttributeValue(element, attribute, None)
         if error != _AX_SUCCESS:
-            raise _ax_error(f"Read {attribute} from element {element_index}", error)
+            raise _ax_error(
+                f"Read {attribute} from element {element_index}",
+                error,
+                element_index=element_index,
+                attribute=attribute,
+            )
         return self._jsonable(value)
 
     def get_attributes(
@@ -1134,18 +1358,34 @@ class MacOS:
     ) -> list[dict[str, Any]]:
         """Search a Chromium/WebKit AX subtree, including virtualized nodes."""
         if element_index is not None and (app is not None or app_pid is not None):
-            raise MacOSError("AX search element_index cannot be combined with app")
+            raise MacOSError(
+                "AX search element_index cannot be combined with app",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "element_index"},
+            )
         if app is not None and app_pid is not None:
-            raise MacOSError("AX search accepts app or app_pid, not both")
+            raise MacOSError(
+                "AX search accepts app or app_pid, not both",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "app_pid"},
+            )
 
         if element_index is None and self._backend != "python":
             native_pid = app_pid if app_pid is not None else self._pid(app)
             if native_pid is None:
-                raise MacOSError("AX search requires an app or a prior app snapshot")
+                raise MacOSError(
+                    "AX search requires an app or a prior app snapshot",
+                    code=ErrorCode.BAD_REQUEST,
+                    details={"parameter": "app"},
+                )
             client = self._acquire_native()
             if client is not None:
                 if direction.casefold() not in {"next", "previous"}:
-                    raise MacOSError("AX search direction must be 'next' or 'previous'")
+                    raise MacOSError(
+                        "AX search direction must be 'next' or 'previous'",
+                        code=ErrorCode.BAD_REQUEST,
+                        details={"parameter": "direction", "value": direction},
+                    )
                 return self._native_query(
                     client,
                     pid=native_pid,
@@ -1167,7 +1407,11 @@ class MacOS:
         if element_index is None:
             pid = app_pid if app_pid is not None else self._pid(app)
             if pid is None:
-                raise MacOSError("AX search requires an app or a prior app snapshot")
+                raise MacOSError(
+                    "AX search requires an app or a prior app snapshot",
+                    code=ErrorCode.BAD_REQUEST,
+                    details={"parameter": "app"},
+                )
             root = self._application_element(
                 pid,
                 messaging_timeout=messaging_timeout,
@@ -1186,7 +1430,9 @@ class MacOS:
             ax_direction = directions[direction.casefold()]
         except KeyError as exc:
             raise MacOSError(
-                "AX search direction must be 'next' or 'previous'"
+                "AX search direction must be 'next' or 'previous'",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "direction", "value": direction},
             ) from exc
         predicate: dict[str, Any] = {
             "AXSearchKey": search_key,
@@ -1215,7 +1461,7 @@ class MacOS:
                 reset_elements=False,
             )
         if error != _AX_SUCCESS:
-            raise _ax_error("AXUIElementsForSearchPredicate", error)
+            raise _ax_error("AXUIElementsForSearchPredicate", error, element_index=element_index)
 
         matches: list[dict[str, Any]] = []
         for element in values or []:
@@ -1249,7 +1495,11 @@ class MacOS:
     ) -> list[dict[str, Any]]:
         """Search a small ordinary AX tree when optimized search is unavailable."""
         if max_nodes <= 0:
-            raise MacOSError("AX fallback max_nodes must be positive")
+            raise MacOSError(
+                "AX fallback max_nodes must be positive",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "max_nodes", "value": max_nodes},
+            )
         result_limit = max_nodes if limit < 0 else int(limit)
         if result_limit <= 0:
             return []
@@ -1320,7 +1570,11 @@ class MacOS:
         values = (apps,) if isinstance(apps, (str, int)) else tuple(apps)
         normalized = tuple(str(value).strip() for value in values)
         if not normalized or any(not value for value in normalized):
-            raise MacOSError("apps must contain at least one non-empty selector")
+            raise MacOSError(
+                "apps must contain at least one non-empty selector",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "apps"},
+            )
         return normalized
 
     def _resolve_apps(self, selectors: tuple[str, ...] | None) -> list[dict[str, Any]]:
@@ -1348,12 +1602,24 @@ class MacOS:
     ) -> tuple[tuple[str, ...] | None, bool]:
         selectors = cls._normalize_apps(apps)
         if app is not None and (all_apps or selectors is not None):
-            raise MacOSError("Pass exactly one of app, all_apps=True, or apps")
+            raise MacOSError(
+                "Pass exactly one of app, all_apps=True, or apps",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "scope"},
+            )
         if all_apps and selectors is not None:
-            raise MacOSError("Pass all_apps=True or apps, not both")
+            raise MacOSError(
+                "Pass all_apps=True or apps, not both",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "scope"},
+            )
         cross_process = all_apps or selectors is not None
         if cross_process and not text:
-            raise MacOSError("Cross-app AX search requires non-empty text")
+            raise MacOSError(
+                "Cross-app AX search requires non-empty text",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "text"},
+            )
         return selectors, cross_process
 
     def ax_search_all(
@@ -1374,13 +1640,29 @@ class MacOS:
         if self._backend == "python":
             self._ensure_accessibility()
         if not text:
-            raise MacOSError("Cross-app AX search requires non-empty text")
+            raise MacOSError(
+                "Cross-app AX search requires non-empty text",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "text"},
+            )
         if direction.casefold() not in {"next", "previous"}:
-            raise MacOSError("AX search direction must be 'next' or 'previous'")
+            raise MacOSError(
+                "AX search direction must be 'next' or 'previous'",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "direction", "value": direction},
+            )
         if max_nodes <= 0:
-            raise MacOSError("AX fallback max_nodes must be positive")
+            raise MacOSError(
+                "AX fallback max_nodes must be positive",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "max_nodes", "value": max_nodes},
+            )
         if limit <= 0:
-            raise MacOSError("Cross-app AX search limit must be positive")
+            raise MacOSError(
+                "Cross-app AX search limit must be positive",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "limit", "value": limit},
+            )
 
         selectors = self._normalize_apps(apps)
         infos = self._resolve_apps(selectors)
@@ -1414,7 +1696,9 @@ class MacOS:
             except MacOSError as exc:
                 if strict:
                     raise MacOSError(
-                        f"AX search failed for {info['name']} ({info['pid']}): {exc}"
+                        f"AX search failed for {info['name']} ({info['pid']}): {exc}",
+                        code=exc.code,
+                        details={**exc.details, "app": info},
                     ) from exc
                 if first_error is None:
                     first_error = exc
@@ -1468,10 +1752,18 @@ class MacOS:
             apps=apps,
             text=text,
         )
-        if timeout < 0:
-            raise MacOSError("AX wait timeout must not be negative")
-        if interval <= 0:
-            raise MacOSError("AX wait interval must be positive")
+        if not math.isfinite(timeout) or timeout < 0:
+            raise MacOSError(
+                "AX wait timeout must be finite and non-negative",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "timeout", "value": timeout},
+            )
+        if not math.isfinite(interval) or interval <= 0:
+            raise MacOSError(
+                "AX wait interval must be finite and positive",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "interval", "value": interval},
+            )
 
         deadline = time.monotonic() + timeout
         while True:
@@ -1504,12 +1796,35 @@ class MacOS:
             if len(matches) == 1:
                 return matches[0]
             if len(matches) > 1:
-                details = "; ".join(self._match_summary(match) for match in matches[:4])
-                raise MacOSError(f"AX wait found {len(matches)} matches: {details}")
+                summary = "; ".join(self._match_summary(match) for match in matches[:4])
+                # More than one match is the caller's search criteria being too loose,
+                # not an unknown element -- and not worth retrying, since a second
+                # identical search will not resolve the ambiguity either. Mirrors the
+                # native agent's `PressCoordinator`, which reports the same condition as
+                # `bad_request` rather than `element.unknown` for exactly this reason.
+                raise MacOSError(
+                    f"AX wait found {len(matches)} matches: {summary}",
+                    code=ErrorCode.BAD_REQUEST,
+                    details={
+                        "count": len(matches),
+                        "matches": [
+                            {
+                                "element_index": match.get("element_index"),
+                                "role": match.get("role"),
+                                "app": match.get("app"),
+                            }
+                            for match in matches[:4]
+                        ],
+                    },
+                )
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise MacOSError("AX wait timed out without a match")
+                raise MacOSError(
+                    "AX wait timed out without a match",
+                    code=ErrorCode.TIMEOUT,
+                    details={"timeout": timeout},
+                )
             time.sleep(min(interval, remaining))
 
     def ax_wait_gone(
@@ -1535,10 +1850,18 @@ class MacOS:
             apps=apps,
             text=text,
         )
-        if timeout < 0:
-            raise MacOSError("AX wait timeout must not be negative")
-        if interval <= 0:
-            raise MacOSError("AX wait interval must be positive")
+        if not math.isfinite(timeout) or timeout < 0:
+            raise MacOSError(
+                "AX wait timeout must be finite and non-negative",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "timeout", "value": timeout},
+            )
+        if not math.isfinite(interval) or interval <= 0:
+            raise MacOSError(
+                "AX wait interval must be finite and positive",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "interval", "value": interval},
+            )
 
         deadline = time.monotonic() + timeout
         empty_polls = 0
@@ -1578,7 +1901,15 @@ class MacOS:
                 return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise MacOSError("AX wait timed out while the match remained")
+                raise MacOSError(
+                    "AX wait timed out before two consecutive empty polls "
+                    "confirmed the match was gone",
+                    code=ErrorCode.TIMEOUT,
+                    details={
+                        "timeout": timeout,
+                        "consecutive_empty_polls": empty_polls,
+                    },
+                )
             time.sleep(min(interval, remaining))
 
     def ax_press(
@@ -1598,13 +1929,33 @@ class MacOS:
         interval: float = 0.1,
     ) -> dict[str, Any]:
         """Press one unique AX target and detect foreground activation."""
+        if not math.isfinite(timeout) or timeout < 0:
+            raise MacOSError(
+                "AX press timeout must be finite and non-negative",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "timeout", "value": timeout},
+            )
+        if not math.isfinite(interval) or interval <= 0:
+            raise MacOSError(
+                "AX press interval must be finite and positive",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "interval", "value": interval},
+            )
         targeted = not all_apps and apps is None
         if targeted and self._backend != "python":
             if direction.casefold() not in {"next", "previous"}:
-                raise MacOSError("AX search direction must be 'next' or 'previous'")
+                raise MacOSError(
+                    "AX search direction must be 'next' or 'previous'",
+                    code=ErrorCode.BAD_REQUEST,
+                    details={"parameter": "direction", "value": direction},
+                )
             target_pid = self._pid(app)
             if target_pid is None:
-                raise MacOSError("AX press requires app, all_apps=True, or apps")
+                raise MacOSError(
+                    "AX press requires app, all_apps=True, or apps",
+                    code=ErrorCode.BAD_REQUEST,
+                    details={"parameter": "app"},
+                )
             client = self._acquire_native()
             if client is not None:
                 # A single agent-side search-then-press request settles
@@ -1621,6 +1972,8 @@ class MacOS:
                     immediate_descendants_only=immediate_descendants_only,
                     attributes=attributes,
                     max_nodes=max_nodes,
+                    timeout=timeout,
+                    interval=interval,
                 )
 
         match = self.ax_wait(
@@ -1641,7 +1994,11 @@ class MacOS:
         owner = match.get("app")
         target_pid = int(owner["pid"]) if isinstance(owner, dict) else self._pid(app)
         if target_pid is None:
-            raise MacOSError("AX press requires app, all_apps=True, or apps")
+            raise MacOSError(
+                "AX press requires app, all_apps=True, or apps",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "app"},
+            )
 
         before = self._frontmost_app()
         try:
@@ -1657,7 +2014,12 @@ class MacOS:
             return
         error = AS.AXUIElementSetAttributeValue(element, attribute, value)
         if error != _AX_SUCCESS:
-            raise _ax_error(f"Set {attribute} on element {element_index}", error)
+            raise _ax_error(
+                f"Set {attribute} on element {element_index}",
+                error,
+                element_index=element_index,
+                attribute=attribute,
+            )
 
     set_value = set
 
@@ -1670,11 +2032,22 @@ class MacOS:
         available = self._actions(element)
         if normalized not in available:
             raise MacOSError(
-                f"Element {element_index} does not expose {normalized!r}; available actions: {available}"
+                f"Element {element_index} does not expose {normalized!r}; available actions: {available}",
+                code=ErrorCode.UNSUPPORTED_OP,
+                details={
+                    "element_index": element_index,
+                    "action": normalized,
+                    "available_actions": available,
+                },
             )
         error = AS.AXUIElementPerformAction(element, normalized)
         if error != _AX_SUCCESS:
-            raise _ax_error(f"Perform {normalized} on element {element_index}", error)
+            raise _ax_error(
+                f"Perform {normalized} on element {element_index}",
+                error,
+                element_index=element_index,
+                action=normalized,
+            )
 
     # --- windows and screenshots ----------------------------------------
 
@@ -1728,12 +2101,22 @@ class MacOS:
         _, info = self._resolve_app(app)
         windows = self.windows(str(info["pid"]))
         if not windows:
-            raise MacOSError(f"No capturable windows found for {app or self._last_app}")
+            raise MacOSError(
+                f"No capturable windows found for {app or self._last_app}",
+                code=ErrorCode.ELEMENT_UNKNOWN,
+                details={"app": info},
+            )
         try:
             window = windows[window_index]
         except IndexError as exc:
             raise MacOSError(
-                f"Window index {window_index} is out of range; found {len(windows)} windows"
+                f"Window index {window_index} is out of range; found {len(windows)} windows",
+                code=ErrorCode.BAD_REQUEST,
+                details={
+                    "parameter": "window_index",
+                    "value": window_index,
+                    "count": len(windows),
+                },
             ) from exc
 
         if path is None:
@@ -1762,7 +2145,11 @@ class MacOS:
         if result.returncode != 0 or not output.exists():
             output.unlink(missing_ok=True)
             detail = (result.stderr or result.stdout or "no image returned").strip()
-            raise MacOSError(f"Window screenshot failed: {detail}")
+            raise MacOSError(
+                f"Window screenshot failed: {detail}",
+                code=ErrorCode.AX_ERROR,
+                details={"reason": detail},
+            )
 
         width, height = _png_size(output)
         bounds = window["bounds"]
@@ -1794,7 +2181,11 @@ class MacOS:
     ) -> dict[str, Any]:
         """Capture a bounded window image and draw the harness pointer onto it."""
         if max_width <= 0 or max_height <= 0:
-            raise MacOSError("max_width and max_height must be positive")
+            raise MacOSError(
+                "max_width and max_height must be positive",
+                code=ErrorCode.BAD_REQUEST,
+                details={"max_width": max_width, "max_height": max_height},
+            )
         screenshot = self.capture_screenshot(app, window_index=window_index, path=path)
         output = Path(screenshot["path"])
         raw_width = int(screenshot["width"])
@@ -1889,37 +2280,80 @@ class MacOS:
     @staticmethod
     def _post(event: Any, pid: int | None) -> None:
         if pid is None:
-            raise MacOSError("Input requires an app or prior app snapshot")
+            raise MacOSError(
+                "Input requires an app or prior app snapshot",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "app"},
+            )
         AS.CGEventPostToPid(pid, event)
 
     def _screen_point(
-        self, x: float, y: float, coordinate_space: str
+        self, x: float, y: float, coordinate_space: str, *, pid: int | None = None
     ) -> tuple[float, float]:
+        """Resolve a coordinate to a screen point, bound to ``pid`` when given.
+
+        ``pid`` -- the already-resolved target of the action this point is
+        for -- is optional: callers with no dispatch target at all (``move``,
+        an AX hit test) simply skip the binding check below. Callers that
+        *do* dispatch to a pid (``click``, ``drag``, ``scroll``) must pass
+        it, so a window/screenshot-relative coordinate computed from a
+        screenshot of one app can never be silently posted to another.
+        """
         if coordinate_space == "screen":
             return float(x), float(y)
         if self._last_screenshot is None:
             raise MacOSError(
                 "Take a screenshot before using window or screenshot coordinates, "
-                "or pass coordinate_space='screen'"
+                "or pass coordinate_space='screen'",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "coordinate_space", "value": coordinate_space},
             )
         shot = self._last_screenshot
+        if pid is not None and int(shot["pid"]) != int(pid):
+            raise MacOSError(
+                f"Last screenshot targets pid {shot['pid']}, not the pid {pid} "
+                "this action targets; take a fresh screenshot for this app or "
+                "pass coordinate_space='screen'",
+                code=ErrorCode.BAD_REQUEST,
+                details={
+                    "parameter": "coordinate_space",
+                    "screenshot_pid": int(shot["pid"]),
+                    "target_pid": int(pid),
+                },
+            )
         bounds = shot["bounds"]
         if coordinate_space == "screenshot":
             x = float(x) / float(shot["scale_x"])
             y = float(y) / float(shot["scale_y"])
         elif coordinate_space != "window":
             raise MacOSError(
-                "coordinate_space must be 'screenshot', 'window', or 'screen'"
+                "coordinate_space must be 'screenshot', 'window', or 'screen'",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "coordinate_space", "value": coordinate_space},
             )
         return bounds["x"] + float(x), bounds["y"] + float(y)
 
-    def _pointer_info(self) -> dict[str, Any] | None:
+    def _pointer_info(self, *, pid: int | None = None) -> dict[str, object] | None:
+        """Describe the current virtual pointer position.
+
+        ``pid``, when given, is the OS process id the caller's action just
+        targeted. ``self._last_screenshot`` only ever describes one specific
+        app's window; a caller that already bound its own action to a
+        different app (``click``, a non-screen ``move``) must never have
+        ``image``/``inside`` silently computed against a screenshot of that
+        *other* app, since those pixel coordinates would be meaningless (or
+        worse, misleadingly plausible) for the app the caller actually
+        targeted. Passing no ``pid`` (``show_pointer``, a screen-space
+        ``move``, which target no particular app at all) keeps reporting
+        against whatever screenshot happens to be retained, if any -- there
+        is no other app identity to compare it against.
+        """
         if self._pointer_position is None:
             return None
         screen_x, screen_y = self._pointer_position
-        result: dict[str, Any] = {"screen": {"x": screen_x, "y": screen_y}}
+        result: dict[str, object] = {"screen": {"x": screen_x, "y": screen_y}}
         shot = self._last_screenshot
-        if shot is not None:
+        if shot is not None and (pid is None or int(shot["pid"]) == int(pid)):
             bounds = shot["bounds"]
             image_x = (screen_x - float(bounds["x"])) * float(shot["scale_x"])
             image_y = (screen_y - float(bounds["y"])) * float(shot["scale_y"])
@@ -1934,19 +2368,44 @@ class MacOS:
         x: float,
         y: float,
         *,
+        app: str | None = None,
         coordinate_space: str = "screenshot",
         duration: float = 0.16,
     ) -> dict[str, Any]:
-        """Animate the virtual pointer without moving the physical cursor."""
-        self._pointer_position = self._screen_point(x, y, coordinate_space)
+        """Animate the virtual pointer without moving the physical cursor.
+
+        ``coordinate_space="screen"`` stays app-free, exactly like every
+        other screen-space call in this file. Any other space converts
+        through ``self._last_screenshot``, and that screenshot belongs to
+        exactly one app -- so this requires ``app`` (or a prior app
+        snapshot, exactly like ``click``/``drag``/``scroll``) to bind the
+        conversion to, rather than silently reusing whatever screenshot
+        ``self._last_screenshot`` last happened to hold regardless of
+        which app it actually came from.
+        """
+        pid = None
+        if coordinate_space != "screen":
+            pid = self._pid(app)
+            if pid is None:
+                raise MacOSError(
+                    "Move requires an app or prior app snapshot for "
+                    "screenshot/window coordinates, or pass coordinate_space='screen'",
+                    code=ErrorCode.BAD_REQUEST,
+                    details={"parameter": "app"},
+                )
+        self._pointer_position = self._screen_point(x, y, coordinate_space, pid=pid)
         self._overlay.move(*self._pointer_position, duration=duration)
-        pointer = self._pointer_info()
+        pointer = self._pointer_info(pid=pid)
         assert pointer is not None
         return pointer
 
     def show_pointer(self) -> dict[str, Any]:
         if self._pointer_position is None:
-            raise MacOSError("Move the virtual pointer before showing it")
+            raise MacOSError(
+                "Move the virtual pointer before showing it",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "pointer_position"},
+            )
         self._overlay.show(*self._pointer_position)
         pointer = self._pointer_info()
         assert pointer is not None
@@ -1970,11 +2429,19 @@ class MacOS:
         self._ensure_post_events()
         button = button.casefold()
         if button not in _BUTTONS:
-            raise MacOSError(f"Unknown mouse button {button!r}")
-        point = self._screen_point(x, y, coordinate_space)
+            raise MacOSError(
+                f"Unknown mouse button {button!r}",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "button", "value": button},
+            )
         pid = self._pid(app)
         if pid is None:
-            raise MacOSError("Pointer input requires an app or prior app snapshot")
+            raise MacOSError(
+                "Pointer input requires an app or prior app snapshot",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "app"},
+            )
+        point = self._screen_point(x, y, coordinate_space, pid=pid)
         focus_before = self._frontmost_app()
         self._pointer_position = point
         self._overlay.move(*point)
@@ -1996,7 +2463,7 @@ class MacOS:
             time.sleep(0.03)
             self._guard_focus(focus_before, pid, "click")
         self._overlay.click()
-        pointer = self._pointer_info()
+        pointer = self._pointer_info(pid=pid)
         assert pointer is not None
         return pointer
 
@@ -2017,12 +2484,20 @@ class MacOS:
         self._ensure_post_events()
         button = button.casefold()
         if button not in _BUTTONS:
-            raise MacOSError(f"Unknown mouse button {button!r}")
-        start = self._screen_point(from_x, from_y, coordinate_space)
-        end = self._screen_point(to_x, to_y, coordinate_space)
+            raise MacOSError(
+                f"Unknown mouse button {button!r}",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "button", "value": button},
+            )
         pid = self._pid(app)
         if pid is None:
-            raise MacOSError("Pointer input requires an app or prior app snapshot")
+            raise MacOSError(
+                "Pointer input requires an app or prior app snapshot",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "app"},
+            )
+        start = self._screen_point(from_x, from_y, coordinate_space, pid=pid)
+        end = self._screen_point(to_x, to_y, coordinate_space, pid=pid)
         focus_before = self._frontmost_app()
         self._pointer_position = start
         self._overlay.move(*start, duration=0)
@@ -2076,18 +2551,30 @@ class MacOS:
         try:
             scroll_unit = units[unit]
         except KeyError as exc:
-            raise MacOSError("Scroll unit must be 'pixel' or 'line'") from exc
+            raise MacOSError(
+                "Scroll unit must be 'pixel' or 'line'",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "unit", "value": unit},
+            ) from exc
         if (x is None) != (y is None):
-            raise MacOSError("Provide both x and y when targeting a scroll point")
+            raise MacOSError(
+                "Provide both x and y when targeting a scroll point",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "x/y"},
+            )
+        pid = self._pid(app)
+        if pid is None:
+            raise MacOSError(
+                "Scroll input requires an app or prior app snapshot",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "app"},
+            )
         point: tuple[float, float] | None = None
         if x is not None and y is not None:
-            point = self._screen_point(x, y, coordinate_space)
+            point = self._screen_point(x, y, coordinate_space, pid=pid)
             self._pointer_position = point
             self._overlay.move(*point)
 
-        pid = self._pid(app)
-        if pid is None:
-            raise MacOSError("Scroll input requires an app or prior app snapshot")
         focus_before = self._frontmost_app()
 
         maximum = 100 if unit == "pixel" else 10
@@ -2112,7 +2599,11 @@ class MacOS:
         self._ensure_post_events()
         pid = self._pid(app)
         if pid is None:
-            raise MacOSError("Keyboard input requires an app or prior app snapshot")
+            raise MacOSError(
+                "Keyboard input requires an app or prior app snapshot",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "app"},
+            )
         focus_before = self._frontmost_app()
         aliases = {" ": "space", "\n": "return", "\r": "return", "\t": "tab"}
         for character in text:
@@ -2137,34 +2628,21 @@ class MacOS:
             time.sleep(0.01)
             self._guard_focus(focus_before, pid, "typing")
 
-    def key(self, key: str, *, app: str | None = None) -> None:
+    @staticmethod
+    def _validate_key(key: str) -> None:
+        _parse_key(key)
+
+    def key(self, key: str, *, app: str | int | None = None) -> None:
         self._ensure_accessibility()
         self._ensure_post_events()
-        parts = [part.casefold() for part in re.split(r"[+-]", key) if part]
-        if not parts:
-            raise MacOSError("Key must not be empty")
-        base = parts[-1]
-        modifiers = parts[:-1]
-        try:
-            keycode = _KEYCODES[base]
-        except KeyError as exc:
-            raise MacOSError(
-                f"Unsupported key {base!r}; use mac.type() for arbitrary text"
-            ) from exc
-        parsed_modifiers: list[tuple[int, int]] = []
-        seen_keycodes: set[int] = set()
-        for modifier in modifiers:
-            try:
-                modifier_keycode = _MODIFIER_KEYCODES[modifier]
-                modifier_flag = _MODIFIER_FLAGS[modifier]
-            except KeyError as exc:
-                raise MacOSError(f"Unsupported modifier {modifier!r}") from exc
-            if modifier_keycode not in seen_keycodes:
-                seen_keycodes.add(modifier_keycode)
-                parsed_modifiers.append((modifier_keycode, modifier_flag))
+        keycode, parsed_modifiers = _parse_key(key)
         pid = self._pid(app)
         if pid is None:
-            raise MacOSError("Keyboard input requires an app or prior app snapshot")
+            raise MacOSError(
+                "Keyboard input requires an app or prior app snapshot",
+                code=ErrorCode.BAD_REQUEST,
+                details={"parameter": "app"},
+            )
         focus_before = self._frontmost_app()
         active_flags = 0
         pressed: list[tuple[int, int]] = []
@@ -2207,5 +2685,9 @@ class MacOS:
             check=False,
         )
         if result.returncode != 0:
-            raise MacOSError((result.stderr or result.stdout).strip())
+            raise MacOSError(
+                (result.stderr or result.stdout).strip(),
+                code=ErrorCode.AX_ERROR,
+                details={"returncode": result.returncode, "language": language},
+            )
         return result.stdout.rstrip("\n")

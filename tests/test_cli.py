@@ -57,3 +57,12 @@ def test_main_exits_with_argparse_error_for_a_stale_agent_invocation(
         cli.main(["agent", "status"])
     assert excinfo.value.code == 2
     assert "invalid choice: 'agent'" in capsys.readouterr().err
+
+
+def test_version_flag_prints_version_and_exits_zero(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["--version"])
+    assert excinfo.value.code == 0
+    assert capsys.readouterr().out.strip() == f"macos-harness {cli.__version__}"
