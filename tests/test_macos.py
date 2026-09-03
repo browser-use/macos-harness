@@ -59,6 +59,55 @@ def test_common_navigation_keys_are_supported() -> None:
     }
 
 
+class _FakeRunningApp:
+    """The `NSRunningApplication` surface `_app_info` reads."""
+
+    def __init__(self, name: str, pid: int) -> None:
+        self._name = name
+        self._pid = pid
+
+    def localizedName(self) -> str:
+        return self._name
+
+    def bundleIdentifier(self) -> None:
+        return None
+
+    def bundleURL(self) -> None:
+        return None
+
+    def processIdentifier(self) -> int:
+        return self._pid
+
+
+def _patch_running_apps(monkeypatch, apps: list[_FakeRunningApp]) -> None:
+    class _FakeWorkspace:
+        @staticmethod
+        def sharedWorkspace():
+            return _FakeWorkspace
+
+        @staticmethod
+        def runningApplications():
+            return apps
+
+    monkeypatch.setattr(macos_module, "NSWorkspace", _FakeWorkspace)
+
+
+def test_pid_query_matches_one_pid_exactly(monkeypatch) -> None:
+    mac = MacOS()
+    _patch_running_apps(
+        monkeypatch,
+        [_FakeRunningApp("Notes", 15012), _FakeRunningApp("Terminal", 907)],
+    )
+
+    # 501 is not running, and must not resolve to 15012 because "501" happens
+    # to appear inside it.
+    with pytest.raises(MacOSError, match="No running application matches"):
+        mac._resolve_app("501")
+
+    assert mac._resolve_app("907")[1]["pid"] == 907
+    assert mac._resolve_app("note")[1]["pid"] == 15012
+
+
 def test_agent_surface_is_flat_and_explicit() -> None:
     mac = MacOS()
 

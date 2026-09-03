@@ -383,7 +383,13 @@ class MacOS:
         exact: list[tuple[Any, dict[str, Any]]] = []
         for app in NSWorkspace.sharedWorkspace().runningApplications():
             info = self._app_info(app)
-            values = [str(info["pid"]), info["name"], info["bundle_id"], info["path"]]
+            # A pid names one process exactly. Substring-matching it lets a pid
+            # that is no longer running match an unrelated app that is, and the
+            # caller then posts events at that app without ever being told.
+            if needle == str(info["pid"]):
+                exact.append((app, info))
+                continue
+            values = [info["name"], info["bundle_id"], info["path"]]
             lowered = [str(value).casefold() for value in values if value]
             if needle in lowered:
                 exact.append((app, info))
