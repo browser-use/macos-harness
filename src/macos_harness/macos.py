@@ -1141,7 +1141,7 @@ class MacOS:
         AS.CGEventPostToPid(pid, event)
 
     def _screen_point(
-        self, x: float, y: float, coordinate_space: str
+        self, x: float, y: float, coordinate_space: str, *, pid: int | None = None
     ) -> tuple[float, float]:
         if coordinate_space == "screen":
             return float(x), float(y)
@@ -1151,6 +1151,13 @@ class MacOS:
                 "or pass coordinate_space='screen'"
             )
         shot = self._last_screenshot
+        shot_pid = shot.get("pid")
+        if pid is not None and shot_pid is not None and int(shot_pid) != int(pid):
+            raise MacOSError(
+                f"The last screenshot is of pid {shot_pid}, and this call targets "
+                f"pid {pid}. Screenshot and window coordinates are relative to one "
+                "app's window. Capture that app, or pass coordinate_space='screen'."
+            )
         bounds = shot["bounds"]
         if coordinate_space == "screenshot":
             x = float(x) / float(shot["scale_x"])
@@ -1219,10 +1226,10 @@ class MacOS:
         button = button.casefold()
         if button not in _BUTTONS:
             raise MacOSError(f"Unknown mouse button {button!r}")
-        point = self._screen_point(x, y, coordinate_space)
         pid = self._pid(app)
         if pid is None:
             raise MacOSError("Pointer input requires an app or prior app snapshot")
+        point = self._screen_point(x, y, coordinate_space, pid=pid)
         focus_before = self._frontmost_app()
         self._pointer_position = point
         self._overlay.move(*point)
@@ -1266,11 +1273,11 @@ class MacOS:
         button = button.casefold()
         if button not in _BUTTONS:
             raise MacOSError(f"Unknown mouse button {button!r}")
-        start = self._screen_point(from_x, from_y, coordinate_space)
-        end = self._screen_point(to_x, to_y, coordinate_space)
         pid = self._pid(app)
         if pid is None:
             raise MacOSError("Pointer input requires an app or prior app snapshot")
+        start = self._screen_point(from_x, from_y, coordinate_space, pid=pid)
+        end = self._screen_point(to_x, to_y, coordinate_space, pid=pid)
         focus_before = self._frontmost_app()
         self._pointer_position = start
         self._overlay.move(*start, duration=0)
@@ -1327,15 +1334,15 @@ class MacOS:
             raise MacOSError("Scroll unit must be 'pixel' or 'line'") from exc
         if (x is None) != (y is None):
             raise MacOSError("Provide both x and y when targeting a scroll point")
-        point: tuple[float, float] | None = None
-        if x is not None and y is not None:
-            point = self._screen_point(x, y, coordinate_space)
-            self._pointer_position = point
-            self._overlay.move(*point)
-
         pid = self._pid(app)
         if pid is None:
             raise MacOSError("Scroll input requires an app or prior app snapshot")
+        point: tuple[float, float] | None = None
+        if x is not None and y is not None:
+            point = self._screen_point(x, y, coordinate_space, pid=pid)
+            self._pointer_position = point
+            self._overlay.move(*point)
+
         focus_before = self._frontmost_app()
 
         maximum = 100 if unit == "pixel" else 10

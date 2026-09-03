@@ -382,6 +382,42 @@ def test_screen_point_converts_retina_pixels() -> None:
     assert mac._screen_point(400, 200, "screen") == (400.0, 200.0)
 
 
+def test_click_refuses_another_apps_screenshot_frame(monkeypatch) -> None:
+    mac = MacOS()
+    posted = []
+    # What mac.see("Notes") leaves behind as the coordinate frame.
+    mac._last_screenshot = {
+        "app": {"name": "Notes", "pid": 15012},
+        "pid": 15012,
+        "width": 800,
+        "height": 600,
+        "bounds": {"x": 100.0, "y": 200.0, "width": 400.0, "height": 300.0},
+        "scale_x": 2.0,
+        "scale_y": 2.0,
+    }
+    monkeypatch.setattr(mac, "_ensure_accessibility", lambda: None)
+    monkeypatch.setattr(mac, "_ensure_post_events", lambda: None)
+    monkeypatch.setattr(mac, "_frontmost_app", lambda: {"name": "Terminal", "pid": 907})
+    monkeypatch.setattr(mac, "_post", lambda event, pid: posted.append(pid))
+
+    # Slack's window is somewhere else, so (50, 50) in the Notes screenshot is
+    # not (50, 50) in Slack.
+    monkeypatch.setattr(mac, "_pid", lambda app: 4242)
+    with pytest.raises(MacOSError, match="targets pid 4242"):
+        mac.click(50, 50, app="Slack")
+    with pytest.raises(MacOSError, match="targets pid 4242"):
+        mac.scroll(-100, app="Slack", x=50, y=50)
+    with pytest.raises(MacOSError, match="targets pid 4242"):
+        mac.drag(10, 10, 50, 50, app="Slack")
+    assert posted == []
+
+    # Screen space names no app, and the screenshot's own app still converts.
+    mac.click(10, 20, app="Slack", coordinate_space="screen")
+    monkeypatch.setattr(mac, "_pid", lambda app: 15012)
+    mac.click(50, 50, app="Notes")
+    assert posted == [4242, 4242, 15012, 15012]
+
+
 def test_move_is_logical_only(monkeypatch) -> None:
     mac = MacOS()
     overlay_moves = []

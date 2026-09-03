@@ -36,8 +36,8 @@ class Accessibility:
         include_actions: bool = True,
     ) -> dict[str, Any]:
         self._host._ensure_accessibility()
-        point = self._host._screen_point(x, y, coordinate_space)
         pid = self._host._pid(app)
+        point = self._host._screen_point(x, y, coordinate_space, pid=pid)
         root = (
             self._host._application_element(pid)
             if pid is not None
