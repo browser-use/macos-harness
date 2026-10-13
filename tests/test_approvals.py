@@ -260,3 +260,12 @@ def test_a_process_known_only_by_its_pid_is_never_approved_for_good(world):
     approvals.approve("#pid:4242", always=True)
     assert approvals.stored()["always"] == {}
     assert ask(agent(), target=bare) is None  # the session yes still holds
+
+
+def test_a_policy_that_does_not_ask_lets_every_allowed_app_through(world):
+    """The default: no prompt, no stored yes needed."""
+    quiet = Policy(
+        decision="allowed", risk="low", allow_persistent=True, warning=None, ask=False
+    )
+    assert ask(agent(), quiet) is None
+    assert world.prompts == [] and approvals.stored() == {"always": {}, "session": []}

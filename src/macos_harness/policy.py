@@ -1,7 +1,10 @@
 """Which apps the agent may drive, how risky each one is, and which pages are off limits.
 
 The order is fixed: the policy files first (a deny there wins), then the forbidden
-list, then the risk level that decides how the approval prompt reads.
+list, then the risk level that decides how the approval prompt reads. By default no
+app is asked about and only what protects the Mac itself is forbidden: the agent's
+own host and the system's password sheets. `ask_before_first_use` brings the prompt
+back, `strict` the terminals.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from urllib.parse import urlsplit
 from . import apps, errors, protocol
 from .model import AgentSession, AppTarget, Policy
 
-# Never driven: a shell there runs any command the page or the document asks for.
+# Forbidden with `strict`: a shell there runs any command a page or a document asks for.
 TERMINALS = frozenset(
     {
         "com.apple.Terminal",
@@ -68,6 +71,8 @@ WARNING = (
 MANAGED_FILE = Path("/Library/Application Support/macos-harness/policy.toml")
 DEFAULTS = {
     "enabled": True,
+    "ask_before_first_use": False,  # true: the approval prompt before an app's first use
+    "strict": False,  # true: terminal apps are forbidden too
     "allow_persistent_approval": True,
     "allow_forbidden_targets": False,  # the switch that turns the forbidden list off
     "default_app_access": "allow",  # "allow" or "deny"
@@ -77,6 +82,8 @@ DEFAULTS = {
 # How the two files combine: all = one false wins, any = one true wins.
 SWITCHES = {
     "enabled": all,
+    "ask_before_first_use": any,
+    "strict": any,
     "allow_persistent_approval": all,
     "allow_forbidden_targets": any,
 }
@@ -127,8 +134,9 @@ def evaluate(agent: AgentSession, target: AppTarget) -> Policy:
         layer["bundle_ids"].get(bundle, layer["default_app_access"]) != "allow"
         for layer in config["layers"]
     )
+    guarded = SECURITY | (TERMINALS if config["strict"] else frozenset())
     forbidden = not config["allow_forbidden_targets"] and (
-        bundle in TERMINALS | SECURITY or _is_host(agent, target)
+        bundle in guarded or _is_host(agent, target)
     )
     # Every app that opens http links is a browser, and a page can carry instructions.
     high = bundle in TERMINALS | ELEVATED or apps.kind(target).http
@@ -137,6 +145,7 @@ def evaluate(agent: AgentSession, target: AppTarget) -> Policy:
         risk="high" if high else "low",
         allow_persistent=config["allow_persistent_approval"],
         warning=WARNING if high else None,
+        ask=config["ask_before_first_use"],
     )
 
 
@@ -157,7 +166,11 @@ def check_recipient(bundle_id: str) -> None:
     if bundle_id in SECURITY or not bundle_id:  # one we cannot name gets nothing
         raise errors.security_process(bundle_id or "unknown process")
     config = load()
-    if bundle_id in TERMINALS and not config["allow_forbidden_targets"]:
+    if (
+        bundle_id in TERMINALS
+        and config["strict"]
+        and not config["allow_forbidden_targets"]
+    ):
         raise errors.forbidden(bundle_id)
     if any(
         layer["bundle_ids"].get(bundle_id, "allow") != "allow"

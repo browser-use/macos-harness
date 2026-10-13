@@ -72,8 +72,11 @@ and it is all an agent needs to read.
   fills only while it is open, which is opened for at most a quarter of a second
 - Draws a pointer of its own, so you can see where the agent acts
 - Waits by itself until the app has settled before it reads again
-- Asks you before an agent uses an app for the first time, and notices when you touch
-  an app the agent is using
+- Asks nothing by default: the agent drives any app except its own host and the
+  system's password sheets. To be asked before an agent's first use of each app, put
+  `ask_before_first_use = true` in `policy.toml` in the state folder; `strict = true`
+  forbids terminal apps too
+- Notices when you touch an app the agent is using
 - Stops when you say so: the menu bar item, Escape twice (needs the Input Monitoring
   permission), or `macos-harness stop`. A stop holds until you resume, from the menu
   bar item or with `macos-harness resume` in your own terminal, also when the helper

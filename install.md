@@ -51,8 +51,11 @@ app), and `doctor` names that app.
 
 ## You stay in charge
 
-- The first time an agent uses an app, a small panel asks you: deny, allow for this
-  session, or always allow. For a run with nobody at the Mac, approve ahead of time:
+- By default nothing asks you first: the agent drives any app except its own host
+  and the system's password sheets. With `ask_before_first_use = true` in `policy.toml`
+  in the state folder, the first time an agent uses an app a small panel asks you:
+  deny, allow for this session, or always allow. Then, for a run with nobody at the
+  Mac, approve ahead of time:
 
   ```bash
   macos-harness approve --app TextEdit --always

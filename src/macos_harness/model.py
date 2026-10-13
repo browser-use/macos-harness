@@ -112,6 +112,7 @@ class Policy:
     risk: str  # "low" or "high"
     allow_persistent: bool
     warning: str | None  # shown in the approval prompt when risk is high
+    ask: bool = True  # the person is asked before the app's first use
 
 
 TYPE_DELAY = 0.00025  # seconds after every typed key event

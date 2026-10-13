@@ -86,8 +86,9 @@ def _approved(agent: AgentSession, bundle_id: str, policy: Policy) -> bool:
 def ensure(
     agent: AgentSession, target: AppTarget, policy: Policy, deadline: float, clock=time
 ) -> None:
-    """Return when the person has allowed this app. A stored yes returns at once."""
-    if _approved(agent, target.bundle_id, policy):
+    """Return when the person has allowed this app. A stored yes returns at once, and
+    so does every app when the policy does not ask (the default)."""
+    if not policy.ask or _approved(agent, target.bundle_id, policy):
         return
     name, asked = display_name(target), (agent.key, target.bundle_id)
 

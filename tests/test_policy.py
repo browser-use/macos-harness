@@ -45,14 +45,48 @@ def refusal(target, who=None) -> str:
 
 def test_app_policy_lookup_returns_three_way_decision_risk(files):
     files("person", '[bundle_ids]\n"com.example.mail" = "deny"\n')
-    decisions = {
-        target.name: policy.evaluate(agent(), target).decision
-        for target in (app("Notes"), app("Mail"), app("Terminal", "com.apple.Terminal"))
-    }
-    assert decisions == {"Notes": "allowed", "Mail": "denied", "Terminal": "forbidden"}
+    targets = (app("Notes"), app("Mail"), app("Lock", "com.apple.SecurityAgent"))
+    decisions = {t.name: policy.evaluate(agent(), t).decision for t in targets}
+    assert decisions == {"Notes": "allowed", "Mail": "denied", "Lock": "forbidden"}
     assert policy.decide(agent(), app("Notes")) == Policy(
-        decision="allowed", risk="low", allow_persistent=True, warning=None
+        decision="allowed", risk="low", allow_persistent=True, warning=None, ask=False
     )
+
+
+def test_by_default_no_app_is_asked_about_and_terminals_are_allowed(files):
+    """The person chose a harness that asks nothing: an app the policy allows is
+    driven at once. Only the agent's own host and the system's password sheets stay
+    forbidden."""
+    host = app("Agent Desk")
+    caller = agent(hosts=frozenset({host.path}))
+    terminal = app("Terminal", "com.apple.Terminal")
+    assert policy.decide(caller, terminal).ask is False
+    assert policy.decide(caller, app("Notes")).ask is False
+    assert policy.evaluate(caller, host).decision == "forbidden"
+    assert (
+        policy.evaluate(caller, app("Lock", "com.apple.SecurityAgent")).decision
+        == "forbidden"
+    )
+    policy.check_recipient("com.apple.Terminal")  # events may go there too
+
+
+@pytest.mark.parametrize("layer", ["managed", "person"])
+def test_asking_before_first_use_is_turned_on_by_either_file(files, layer):
+    files(layer, "ask_before_first_use = true\n")
+    assert policy.decide(agent(), app("Notes")).ask is True
+    files(
+        "managed" if layer == "person" else "person", "ask_before_first_use = false\n"
+    )
+    assert policy.decide(agent(), app("Notes")).ask is True  # one true wins
+
+
+@pytest.mark.parametrize("layer", ["managed", "person"])
+def test_strict_forbids_the_terminals_again(files, layer):
+    files(layer, "strict = true\n")
+    for bundle_id in policy.TERMINALS:
+        assert policy.evaluate(agent(), app("T", bundle_id)).decision == "forbidden"
+    with pytest.raises(errors.HarnessError, match="For safety,"):
+        policy.check_recipient("com.apple.Terminal")
 
 
 def test_a_deny_in_the_policy_file_wins_over_the_forbidden_list(files):
@@ -68,6 +102,7 @@ def test_refusal_texts_denied_forbidden_apps(files):
     assert refusal(app("Mail")) == (
         "Your policy file says macOS Harness may not use the app 'com.example.mail'."
     )
+    files("person", "strict = true\n")
     assert refusal(app("iTerm", "com.googlecode.iterm2")) == (
         "For safety, macOS Harness may not use the app 'com.googlecode.iterm2'."
     )
@@ -136,10 +171,9 @@ def test_listing_apps_skips_policy_wrapper(files):
     assert policy.display_name(app("Nowhere")) == "Nowhere"
 
 
-def test_forbidden_11_terminal_apps():
+def test_11_terminal_apps_are_high_risk():
     assert len(policy.TERMINALS) == 11
     for bundle_id in policy.TERMINALS:
-        assert policy.evaluate(agent(), app("T", bundle_id)).decision == "forbidden"
         assert policy.evaluate(agent(), app("T", bundle_id)).risk == "high"
 
 
@@ -150,8 +184,6 @@ def test_a_process_that_gets_events_for_an_app_passes_the_lists_too(files):
         policy.check_recipient("")  # a process we cannot name gets nothing
     with pytest.raises(errors.HarnessError, match="system security process"):
         policy.check_recipient("com.apple.SecurityAgent")
-    with pytest.raises(errors.HarnessError, match="For safety,"):
-        policy.check_recipient("com.apple.Terminal")
     files("person", '[bundle_ids]\n"com.example.vault" = "deny"\n')
     with pytest.raises(errors.HarnessError, match="Your policy file says"):
         policy.check_recipient("com.example.vault")
@@ -199,8 +231,9 @@ def test_user_defaults_key_turns_forbidden_list_off(files):
     terminal = app("Terminal", "com.apple.Terminal")
     host = app("Agent Desk")
     caller = agent(hosts=frozenset({host.path}))
+    files("person", "strict = true\n")
     assert policy.evaluate(caller, terminal).decision == "forbidden"
-    files("person", "allow_forbidden_targets = true\n")
+    files("person", "strict = true\nallow_forbidden_targets = true\n")
     assert policy.decide(caller, terminal).risk == "high"
     assert policy.decide(caller, host).decision == "allowed"
 
