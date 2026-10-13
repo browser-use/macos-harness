@@ -11,6 +11,7 @@ import dataclasses
 import importlib
 import json
 import math
+import os
 import time
 import traceback
 from collections.abc import Callable
@@ -565,16 +566,51 @@ def _named_app(call: Call) -> AppTarget | None:
 
 
 # The process behind every tool call so far: (pid, start time) of the client's first
-# parent that is no shell or wrapper.
+# parent that is no shell or wrapper. Also written to callers.json in the state
+# folder, so that a helper started again (by `helper restart`, or after a kill) still
+# knows them. The start time tells a reused pid apart.
 _callers: set[tuple[int, float]] = set()
+
+
+def _callers_file():
+    return protocol.state_dir() / "callers.json"
+
+
+def _stored_callers() -> set[tuple[int, float]]:
+    try:
+        rows = json.loads(_callers_file().read_text("utf-8"))
+        return {(int(pid), float(start)) for pid, start in rows}
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
+def _remember_caller(caller: tuple[int, float]) -> None:
+    """Keep the caller, on disk too. Callers whose process is gone are dropped there."""
+    if caller in _callers:
+        return
+    _callers.add(caller)
+    from .helper import process
+
+    def lives(pid: int, start: float) -> bool:
+        return (process(pid) or (0, "", None))[2] == start
+
+    kept = {row for row in _stored_callers() if lives(*row)} | {caller}
+    with contextlib.suppress(OSError):
+        folder = protocol.state_dir()
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        draft = folder / "callers.tmp"
+        draft.write_text(json.dumps(sorted(kept)), "utf-8")
+        os.replace(draft, _callers_file())
 
 
 def _person_only(call: Call) -> None:
     """Approve and resume are the person's: an agent that has used an app cannot lift
-    its own stop or approve itself, under another session name or through a script
-    either. (The person's terminal has other parents.) A guard against a model that
-    follows a hint, not a wall: a process cut loose from its parents gets through."""
-    if call.agent.used_tools or call.agent.parents & _callers:
+    its own stop or approve itself, under another session name, through a script or
+    after restarting the helper. (The person's terminal has other parents.) A guard
+    against a model that follows a hint, not a wall: a process cut loose from its
+    parents, or one that edits the state folder, gets through."""
+    known = _callers | _stored_callers()
+    if call.agent.used_tools or call.agent.parents & known:
         raise errors.person_only(call.name)
 
 
@@ -971,7 +1007,8 @@ def execute(
                 args[tool.stdin] = stdin.removesuffix("\n")
         if name in TOOLS:
             agent.used_tools = True
-            _callers.update([agent.caller] if agent.caller else [])
+            if agent.caller:
+                _remember_caller(agent.caller)
         result = tool.run(Call(name, args, agent, cwd, deadline))
     except NeedStdin:
         raise

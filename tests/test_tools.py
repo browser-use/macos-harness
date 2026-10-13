@@ -1263,6 +1263,32 @@ def test_an_agent_that_used_an_app_cannot_approve_or_resume_itself(world):
     assert world.run("resume", agent=other)[0] == 0
 
 
+def test_a_restarted_helper_still_knows_who_made_tool_calls(world, monkeypatch):
+    """The agent made a call, the person stopped it, the agent ran `helper restart`
+    (or killed the helper) and then `resume`: the new helper had forgotten the
+    callers, and the resume counted as the person's."""
+    monkeypatch.setattr(tools, "_callers", set())
+    monkeypatch.setattr(helper, "process", lambda pid: (1, "/bin/agent", 1030.0))
+    agent_process, terminal = (30, 1030.0), (10, 1010.0)
+    agent = AgentSession(
+        "a", caller=agent_process, parents=frozenset({agent_process, terminal})
+    )
+    assert world.run("get_app_state", "Demo", agent=agent)[0] == 0
+    monkeypatch.setattr(tools, "_callers", set())  # the helper is started again
+    child = AgentSession(
+        "x", parents=frozenset({(80, 1080.0), agent_process, terminal})
+    )
+    for command in (["resume"], ["approve", "--app", "Demo"]):
+        code, _, err = world.run(*command, agent=child)
+        assert code == 1 and "is the user's command" in err
+    person = AgentSession("p", parents=frozenset({(90, 1090.0), terminal}))
+    assert world.run("resume", agent=person)[0] == 0  # a shell that made no call
+    reused = AgentSession("r", parents=frozenset({(30, 5000.0), terminal}))
+    assert (
+        world.run("resume", agent=reused)[0] == 0
+    )  # the pid now names another process
+
+
 def test_another_session_name_or_a_script_does_not_make_the_agent_the_person(
     world, monkeypatch
 ):
