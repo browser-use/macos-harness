@@ -1,0 +1,41 @@
+A row moves among its siblings. The rows that keep their order stay paired. The
+moved row is a new line: it is added, and nothing is removed for it. Its new number
+is the one after the largest that stayed, which here is the number it had.
+== read
+a window
+.b row one
+.c row two
+.d row three
+== want
+Window: "Main", App: App.
+0 window
+	1 row one
+	2 row two
+	3 row three
+
+== read
+a window
+.d row three
+.b row one
+.c row two
+== want
+<HEADER>
++	3 row three
+== read
+a window
+.b row one
+.c row two
+.d row three
+== want
+<HEADER>
++	3 row three
+== read
+a window
+.c row two
+.d row three
+.b row one
+== want
+<HEADER>
+IDs of elements that went away: 1
++	4 row one
+== end

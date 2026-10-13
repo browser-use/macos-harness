@@ -1,0 +1,34 @@
+Window: "Reader", App: Reader.
+0 standard window Reader – 2 found, Secondary Actions: Raise, URL: file:///Users/me/Documents/a%20very%20long%20folder%20name/and%20another%20one/that%20goes%20on/and%20on/page.html
+	1 outline sidebar
+		2 row (selectable) Description: clock, Value: Recents
+		3 row (selectable, expanded) Value: Favourites, Secondary Actions: Collapse
+		4 row (selected) Eject, Value: Backup, Description: External hard drive
+eject
+		5 row (selectable)
+			6 cell
+				7 text field (settable) Project
+	8 HTML content example.com/docs/page?lang=en#top
+		9 heading Serendipity, Value: 1
+			10 text Serendipity
+		11 text noun
+		12 text a happy chance
+		13 container
+			14 text For other uses, see 
+			15 link Luck, Value: x-dictionary:r:'Luck?lang=en
+			16 text . the end
+		17 container
+			18 link Portrait, Value: file:///wiki/File:Portrait.jpg
+			19 link Read more, Value: example.org/a
+			20 text  by 
+			21 link Someone, Value: mailto:someone@example.org
+		22 link [1], Value: example.net/cite#note-1
+		23 container alone in a list item
+			24 text alone
+		25 table
+			26 row (selectable)
+				27 cell (selectable) Columns: 0-1, Value: ·, Abilene paradox
+Adverse effect
+			28 row (selectable) Name
+Date
+		29 busy indicator loading

@@ -1,0 +1,34 @@
+A sheet takes the place of the window. No element pairs, so the numbers start at 1,
+and the diff would cost 3 lines against a tree of 2: the full tree is printed. The
+next read is a diff against it. A read with diffing off counts from 0 again.
+== read
+a window Main
+.b button OK
+== want
+Window: "Main", App: App.
+0 window Main
+	1 button OK
+
+== read title=Unknown
+x sheet
+.y button Save
+== want
+Window: "Unknown", App: App.
+1 sheet
+	2 button Save
+
+== read title=Unknown
+x sheet
+.y button Saved
+== want
+<HEADER>
+~	2 button Saved
+== read full title=Unknown
+x sheet
+.y button Saved
+== want
+Window: "Unknown", App: App.
+0 sheet
+	1 button Saved
+
+== end

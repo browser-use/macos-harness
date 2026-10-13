@@ -1,0 +1,36 @@
+The three forms of a state read: full tree, diff, no change.
+== read
+a standard window Main
+.b button OK
+.*c text field (settable) Value: one
+d menu bar
+.e File
+== want
+Window: "Main", App: App.
+0 standard window Main
+	1 button OK
+	2 text field (settable) Value: one
+3 menu bar
+	4 File
+
+The focused UI element is 2 text field (settable) Value: one
+== read
+a standard window Main
+.b button OK
+.*c text field (settable) Value: two
+d menu bar
+.e File
+== want
+<HEADER>
+~	2 text field (settable) Value: two
+The focused UI element is 2 text field (settable) Value: two
+== read
+a standard window Main
+.b button OK
+.*c text field (settable) Value: two
+d menu bar
+.e File
+== want
+Nothing changed in window "Main" since the last read.
+The focused UI element is 2 text field (settable) Value: two
+== end

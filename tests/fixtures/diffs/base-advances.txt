@@ -1,0 +1,54 @@
+Every read becomes the base of the next one. The third read is compared with the
+second, not with the first, and a read with diffing off is a base too.
+== read
+a window
+.b text 1
+.c button
+== want
+Window: "Main", App: App.
+0 window
+	1 text 1
+	2 button
+
+== read
+a window
+.b text 2
+.c button
+== want
+<HEADER>
+~	1 text 2
+== read
+a window
+.b text 2
+.c button
+== want
+Nothing changed in window "Main" since the last read.
+== read
+a window
+.n text new
+.b text 2
+.c button
+== want
+<HEADER>
++	3 text new
+== read full
+a window
+.n text new
+.b text 2
+.c button
+== want
+Window: "Main", App: App.
+0 window
+	1 text new
+	2 text 2
+	3 button
+
+== read
+a window
+.n text new
+.b text 3
+.c button
+== want
+<HEADER>
+~	2 text 3
+== end

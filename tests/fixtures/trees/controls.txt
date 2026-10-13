@@ -1,0 +1,48 @@
+Window: "Demo", App: Demo.
+0 standard window Demo, Secondary Actions: Raise
+	1 text Value: Status: idle Count: 0, ID: status
+	2 button Press me, ID: press
+	3 button (disabled) Unavailable
+	4 button Help me, Help: Shows a hint
+	5 button Description: Hide Sidebar, Secondary Actions: Increment, Decrement, Delete, Cancel
+	6 text field (settable) Placeholder: Name, ID: name
+	7 checkbox Enable option, Value: 0, ID: option
+	8 toggle button Description: Show info, Value: off, Details: not selected
+	9 radio button All, Value: 1
+	10 radio button Some, Value: 0
+	11 pop up button Colour:, Value: Red
+	12 slider (settable, float) Value: 25, ID: level
+		13 value indicator (settable, float) 25
+	14 stepper Value: 3.5, ID: stepper, Secondary Actions: Increment, Decrement
+		15 increment arrow button
+	16 splitter (disabled, settable, float) 150
+	17 scroll area ID: notes-scroll, Secondary Actions: Scroll Up, Scroll Down
+		18 text entry area (settable) ID: notes, Value: Line 1
+Line 2
+		19 scroll bar (settable, float) 0.25
+			20 value indicator (settable, float) 0.25
+			21 increment page button
+	22 scroll area
+		23 table items
+			24 row (selectable)
+				25 cell
+					26 text Item 1
+				27 cell
+					28 text 3
+			29 row (selected)
+				30 cell (selected)
+					31 text Item 2
+				32 cell
+					33 text 6
+			34 container
+				35 sort button Item
+				36 sort button Qty
+	37 container Description: Pad, ID: pad
+	38 button Deep
+	39 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	40 text Demo 2 found
+41 menu bar
+	42 Demo
+	43 View, ID: viewMenu
+
+The focused UI element is 6 text field (settable) Placeholder: Name, ID: name
