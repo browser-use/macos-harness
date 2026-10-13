@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "macos-harness"
-version = "0.1.2"
+version = "0.2.0"
 description = "The simplest, thinnest harness that gives an LLM complete freedom to control a Mac."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,13 +24,14 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-  "browser-harness>=0.1.9",
-  "pillow>=11.3",
   "pyobjc-framework-ApplicationServices>=12.0; sys_platform == 'darwin'",
+  "pyobjc-framework-Cocoa>=12.0; sys_platform == 'darwin'",
+  "pyobjc-framework-Quartz>=12.0; sys_platform == 'darwin'",
 ]
 
 [dependency-groups]
 dev = [
+  "pillow>=11.3",
   "pytest>=8.4",
   "pyyaml>=6.0",
   "ruff>=0.12",
@@ -52,3 +53,6 @@ packages = ["src/macos_harness"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "live: drives a real app on this Mac. Runs only with MACOS_HARNESS_LIVE=1.",
+]
