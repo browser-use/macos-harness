@@ -543,8 +543,12 @@ class MacOS:
         extra_attributes: Iterable[str] = (),
         include_actions: bool = True,
         include_settable: bool = True,
+        elements: dict[int, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        self._elements = {}
+        # Numbers each walked element into `elements`. Without one, the walk
+        # is a snapshot and starts a fresh handle registry.
+        if elements is None:
+            elements = self._elements = {}
         nodes: list[dict[str, Any]] = []
         seen: set[int] = set()
         requested_attributes = tuple(
@@ -567,7 +571,7 @@ class MacOS:
             if raw["AXRole"] == "AXMenuBar" and not include_menu_bar:
                 return
             index = len(nodes)
-            self._elements[index] = element
+            elements[index] = element
             node: dict[str, Any] = {
                 "element_index": index,
                 "depth": depth,
@@ -858,6 +862,11 @@ class MacOS:
 
         role = _AX_SEARCH_ROLES.get(search_key)
         needle = text.casefold() if text is not None else None
+        # A search is a read. Walk into a private table, then hand out handles
+        # for the matches only, like the optimized path above, so the handles
+        # a prior snapshot gave the caller stay bound and the registry grows
+        # by what the caller sees.
+        walked: dict[int, Any] = {}
         nodes = self._snapshot_tree(
             root,
             max_depth=1 if immediate_descendants_only else 25,
@@ -866,6 +875,7 @@ class MacOS:
             extra_attributes=attributes,
             include_actions=include_actions,
             include_settable=False,
+            elements=walked,
         )[1:]
         if direction.casefold() == "previous":
             nodes.reverse()
@@ -891,11 +901,11 @@ class MacOS:
                 and (not visible_only or not bool(node.get("hidden")))
                 and text_matches
             ):
-                index = int(node["element_index"])
+                element = walked[int(node["element_index"])]
                 matches.append(
                     self._describe_element(
-                        self._element(index),
-                        index,
+                        element,
+                        self._remember_element(element),
                         attributes=attributes,
                         include_actions=include_actions,
                     )
