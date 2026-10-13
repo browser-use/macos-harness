@@ -77,7 +77,7 @@ and it is all an agent needs to read.
   `ask_before_first_use = true` in `policy.toml` in the state folder; `strict = true`
   forbids terminal apps too
 - Notices when you touch an app the agent is using
-- Stops when you say so: the menu bar item, Escape twice (needs the Input Monitoring
+- Stops when you say so: the menu bar item, Escape twice while an agent works (needs the Input Monitoring
   permission), or `macos-harness stop`. A stop holds until you resume, from the menu
   bar item or with `macos-harness resume` in your own terminal, also when the helper
   is started again. `approve` and `resume` are refused from the agent's own process

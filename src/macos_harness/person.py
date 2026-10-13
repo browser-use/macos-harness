@@ -264,7 +264,9 @@ def saw(
     if kind == KEY_DOWN and keycode == ESCAPE and not repeat:
         pair = now - _last_escape <= DOUBLE_PRESS_S
         _last_escape = -math.inf if pair else now
-        if pair:
+        if (
+            pair and _drivers
+        ):  # the brake of a running agent: with none, an ordinary key
             stop(by="escape", clock=clock)
     path = _driven_path(pid)
     if path is None:

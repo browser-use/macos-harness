@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from types import SimpleNamespace
 
@@ -784,6 +785,38 @@ def presses(world, *sequence) -> bool:
 )
 def test_escape_twice_within_500_ms_stops_every_driven_app(world, sequence, stops):
     assert presses(world, *sequence) is stops
+
+
+def test_escape_twice_with_no_app_driven_stops_nothing(world):
+    """Escape twice in an editor or a dialog, with no agent at work, stopped every app
+    and wrote it down: the harness refused every call until a resume, also after a
+    restart."""
+    world.escape()
+    world.escape()
+    assert not person.stopped(NOTES)
+    assert not (protocol.state_dir() / "stops.json").exists()
+    assert not [
+        call for call in world.presence.calls if call[0] in ("label", "stopped")
+    ]
+
+
+def test_escape_twice_while_an_app_is_driven_stops_everything_for_good(world):
+    world.call(agent())
+    world.escape()
+    world.escape()
+    assert person.stopped(NOTES) and person.stopped(MAIL)
+    record = json.loads((protocol.state_dir() / "stops.json").read_text("utf-8"))
+    assert record["all"] is True
+    person.resume()
+
+
+def test_escape_twice_counts_when_the_app_became_driven_between_the_presses(world):
+    world.escape()
+    world.call(agent())  # the agent's first call lands between the two presses
+    world.clock.sleep(0.1)
+    world.escape()
+    assert person.stopped(NOTES)
+    person.resume()
 
 
 def test_a_third_escape_does_not_pair_with_the_second(world):
