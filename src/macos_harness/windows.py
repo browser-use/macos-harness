@@ -23,6 +23,7 @@ NEW_WINDOWS = (
     "AXSheetCreated",
 )  # the app is told it wants no attention
 KEY_WINDOW = ("AXFocusedWindow", "AXMainWindow", "AXWindows")  # in this order
+DESKTOP = "AXDesktop"  # the subrole of Finder's desktop
 WINDOW_LIST_ALL = 0  # the window server's option for every window, on screen or not
 # A control that shows its open menu as a child. Closed, it has no such child.
 MENU_BUTTONS = ("AXPopUpButton", "AXMenuButton")
@@ -136,12 +137,24 @@ def _app(target: AppTarget) -> Any:
 
 
 def key_window(target: AppTarget) -> WindowRef:
-    """The focused window, else the main window, else the last of the window list."""
+    """The focused window, else the main window, else the last of the window list.
+    Finder lists its desktop as a window and, with a context menu of a Finder window
+    in the background open, may report it as the focused one: the desktop comes only
+    when Finder has no other window."""
     focused, main, listed = ax.get_many(_app(target), KEY_WINDOW)
-    for window in (focused, main, *(listed or ())[-1:]):
+    listed = list(listed or ())
+    real = [window for window in listed if not _is_desktop(window)]
+    for window in (focused, main, *real[-1:]):
+        if window is not None and not _is_desktop(window):
+            return _window_ref(window)
+    for window in (focused, main, *listed[-1:]):
         if window is not None:
             return _window_ref(window)
     raise errors.no_windows()
+
+
+def _is_desktop(window: Any) -> bool:
+    return ax.get(window, "AXSubrole") == DESKTOP
 
 
 def ordered(target: AppTarget) -> list[WindowRef]:

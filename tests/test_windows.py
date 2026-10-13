@@ -102,6 +102,28 @@ def test_key_window_tracking_kvo_primary_window_notion_separate(rig):
     assert rig.ax.observers == []  # no tracker object behind it
 
 
+def test_finder_s_desktop_is_never_the_key_window(rig):
+    """Finder lists its desktop last among its windows, and with a context menu of a
+    background Finder window open it may report the desktop as focused: every read
+    then printed the desktop, with no picture."""
+    window = rig.window("finder-compress", (0, 0, 400, 300), 11)
+    desktop = El("AXScrollArea", attrs={"AXSubrole": "AXDesktop"})
+    rig.app.attrs["AXWindows"] = [window, desktop]
+    rig.app.attrs["AXFocusedWindow"] = desktop
+    assert windows.key_window(TARGET).element is window  # the last real window
+    rig.app.attrs["AXMainWindow"] = window
+    assert windows.key_window(TARGET).element is window
+
+
+def test_finder_with_no_window_open_reads_its_desktop(rig):
+    """What is on the desktop stays readable when Finder has no other window."""
+    desktop = El("AXScrollArea", attrs={"AXSubrole": "AXDesktop"})
+    rig.app.attrs["AXWindows"] = [desktop]
+    assert windows.key_window(TARGET).element is desktop
+    rig.app.attrs["AXFocusedWindow"] = desktop
+    assert windows.key_window(TARGET).element is desktop
+
+
 def test_no_capturable_window_explicit_error(rig):
     """An app with no window at all says so by name."""
     with pytest.raises(errors.HarnessError) as raised:
