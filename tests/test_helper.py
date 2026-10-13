@@ -184,7 +184,10 @@ def test_an_agent_whose_process_exited_is_forgotten_once():
 
 def test_the_real_process_table_and_the_real_socket_peer():
     parent, path, started = helper.process(os.getpid())
-    assert parent == os.getppid() and os.path.basename(path).startswith("python")
+    # A framework build runs as .../Python.app/Contents/MacOS/Python.
+    assert parent == os.getppid() and os.path.basename(path).lower().startswith(
+        "python"
+    )
     assert time.time() - 3600 < started <= time.time()
     child = subprocess.Popen([sys.executable, "-c", "pass"])
     child.wait()
@@ -582,9 +585,17 @@ def test_a_socket_file_with_no_lock_holder_is_stale(world):
 
 def test_start_and_exit_order(world, monkeypatch):
     monkeypatch.setattr(helper, "_on_signals", lambda: None)
-    monkeypatch.setattr(
-        helper.runloop, "run", lambda: world.log.append(("runloop.run", (), {}))
-    )
+    running = []  # the helper's own threads at the moment the loop starts
+
+    def run(then=lambda: None):
+        names = [thread.name for thread in threading.enumerate()]
+        running.extend(
+            n for n in names if n.endswith(("(serve)", "(idle_loop)", "(_exit_cap)"))
+        )
+        world.log.append(("runloop.run", (), {}))
+        then()
+
+    monkeypatch.setattr(helper.runloop, "run", run)
     seen = {}
 
     def client():
@@ -599,6 +610,9 @@ def test_start_and_exit_order(world, monkeypatch):
     thread = threading.Thread(target=client)
     thread.start()
     helper.main()
+    # No thread of the helper was started before the loop ran: their first calls to
+    # the main thread would have run on their own thread.
+    assert running == []
     thread.join(5)
     assert seen["ping"]["result"]["pid"] == os.getpid()
     assert seen["call"]["result"]["exit"] == 0
@@ -627,7 +641,7 @@ def test_start_and_exit_order(world, monkeypatch):
 
 def test_a_failing_start_step_does_not_stop_the_helper(world, monkeypatch):
     monkeypatch.setattr(helper, "_on_signals", lambda: None)
-    monkeypatch.setattr(helper.runloop, "run", lambda: None)
+    monkeypatch.setattr(helper.runloop, "run", lambda then: then())
     world.pasteboard.answers["restore_saved"] = RuntimeError("no pasteboard")
     world.focus.answers["release_all"] = RuntimeError("no focus")
     threading.Timer(0.2, helper.shutdown).start()

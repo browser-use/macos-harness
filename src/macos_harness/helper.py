@@ -529,12 +529,15 @@ def main() -> None:
         _quietly(lambda: mods.screenshot.cleanup())
         _quietly(lambda: mods.person.start_watch(os.getpid()))
         prewarm = lambda: _quietly(lambda: mods.apps.prewarm())
-        threading.Thread(target=prewarm, daemon=True).start()
-        threading.Thread(target=serve, args=(sock,), daemon=True).start()
-        threading.Thread(target=idle_loop, daemon=True).start()
-        threading.Thread(target=_exit_cap, daemon=True).start()
+
+        def start_threads() -> None:  # once the loop runs: their work reaches it
+            threading.Thread(target=prewarm, daemon=True).start()
+            threading.Thread(target=serve, args=(sock,), daemon=True).start()
+            threading.Thread(target=idle_loop, daemon=True).start()
+            threading.Thread(target=_exit_cap, daemon=True).start()
+
         _on_signals()
-        runloop.run()
+        runloop.run(then=start_threads)
         STATE.left.wait()  # with no AppKit loop, run() returns at once: wait for shutdown
     finally:
         shutdown()

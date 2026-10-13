@@ -51,17 +51,24 @@ def call_on_main(fn: Callable[[], Any]) -> Any:
     return value
 
 
-def run() -> None:
+def run(then: Callable[[], Any] = lambda: None) -> None:
     """Run the AppKit loop as an accessory app (no Dock icon) until `stop()`.
 
+    `then` runs on the main thread once the loop runs. Start there every thread that
+    may call `on_main`: one started earlier can call it before the loop runs, and its
+    work then runs at once on that thread, off the main thread.
     Only `helper.main` calls this, on the main thread.
     """
     from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
     from Foundation import NSOperationQueue
 
+    def started() -> None:
+        _running.set()
+        on_main(then)
+
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-    NSOperationQueue.mainQueue().addOperationWithBlock_(_running.set)
+    NSOperationQueue.mainQueue().addOperationWithBlock_(started)
     try:
         app.run()
     finally:

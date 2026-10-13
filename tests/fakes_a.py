@@ -214,7 +214,7 @@ def helper_main() -> None:
     from macos_harness import protocol, runloop
 
     install()
-    runloop.run = lambda: None  # main() then waits for shutdown without AppKit
+    runloop.run = lambda then: then()  # main() then waits for shutdown without AppKit
     if os.environ.get("FAKES_A_VERSION"):  # a helper of another version
         protocol.VERSION = os.environ["FAKES_A_VERSION"]
     helper.main()

@@ -48,10 +48,9 @@ def worker():
     seen["nested"] = runloop.call_on_main(lambda: runloop.call_on_main(lambda: "in"))
     runloop.stop()
 
-timer = threading.Timer(0.2, worker)
-timer.start()
-runloop.run()  # returns after stop()
-timer.join()
+thread = threading.Thread(target=worker)
+runloop.run(then=thread.start)  # returns after stop()
+thread.join()
 assert not runloop._running.is_set()
 print(sorted(seen.items()))
 """
@@ -77,3 +76,33 @@ def test_the_real_loop_runs_work_on_the_main_thread_as_an_accessory_app():
             ("soon", "MainThread"),
         ]
     )
+
+
+EARLY_CALLER = """
+import threading
+from macos_harness import runloop
+
+seen = []
+
+def caller():
+    runloop.on_main(lambda: seen.append(threading.current_thread() is threading.main_thread()))
+    runloop.stop()
+
+runloop.run(then=threading.Thread(target=caller).start)
+print(seen)
+"""
+
+
+def test_a_thread_started_by_the_loop_never_runs_main_thread_work_itself():
+    """A thread started before the loop ran (the helper's server) could call on_main
+    first: its work ran at once on that thread, off the main thread. On a slow machine
+    the worker of the test above died that way and the loop never stopped."""
+    done = subprocess.run(
+        [sys.executable, "-c", EARLY_CALLER],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "[True]"
