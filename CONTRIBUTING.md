@@ -10,4 +10,5 @@ uv run pytest
 ```
 
 Pull requests should preserve three invariants: never move the physical pointer,
-never activate or raise a target app, and never send user data through telemetry.
+never bring a target app to the front unless the model asks for `Raise` by name, and
+never send user data through telemetry.
