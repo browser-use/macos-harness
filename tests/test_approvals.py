@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import fakes_g
 import pytest
@@ -269,3 +270,34 @@ def test_a_policy_that_does_not_ask_lets_every_allowed_app_through(world):
     )
     assert ask(agent(), quiet) is None
     assert world.prompts == [] and approvals.stored() == {"always": {}, "session": []}
+
+
+def test_allow_for_this_session_holds_for_the_agent_s_whole_session(world, monkeypatch):
+    """It lived in the helper's memory only: after the helper's idle exit (15 minutes)
+    the same chat was asked again. Now it lasts while the agent's process runs; one
+    given with the command lasts while the helper lives."""
+    running = {"501:1000.5"}
+    monkeypatch.setattr(approvals, "_alive", lambda key: key in running)
+    chat = agent("501:1000.5")
+    ask(chat)
+    world.prompts[0]["answer"]("Allow for this session")
+    approvals.approve("com.example.other", always=False)  # by the command: no agent
+    monkeypatch.setattr(approvals, "_SESSION", set())  # the helper is started again
+    assert ask(chat) is None and len(world.prompts) == 1  # not asked again
+    assert (
+        ask(agent("502:2000.0"), target=NOTES).name == "approval_waiting"
+    )  # another chat
+    assert (
+        ask(chat, target=app("Other", "com.example.other")).name == "approval_waiting"
+    )
+    running.clear()  # the chat ended
+    assert ask(chat).name == "approval_waiting"
+
+
+def test_a_session_approval_s_agent_is_found_by_the_key_the_helper_gives_it():
+    from macos_harness import helper
+
+    pid = os.getpid()
+    start = helper.process(pid)[2]
+    assert approvals._alive(f"{pid}:{start}") and approvals._alive("run-7")
+    assert not approvals._alive(f"{pid}:{start + 1}")
