@@ -19,10 +19,13 @@ REFETCH = (
 TEXTS = [
     (
         "server_error",
-        ("The app opened no window in time",),
+        (
+            "The app started but showed no window within 5 seconds. Call `get_app_state` once more; if it fails again, tell the user.",
+        ),
         100,
         "server_error",
-        P + "The app opened no window in time",
+        P
+        + "The app started but showed no window within 5 seconds. Call `get_app_state` once more; if it fails again, tell the user.",
     ),
     (
         "user_changed",
@@ -42,18 +45,6 @@ TEXTS = [
         (
             "The user is working in '/Applications/Notes.app' right now. Wait 5 "
             "seconds, then try again."
-        ),
-    ),
-    (
-        "stopped_by_user",
-        (),
-        111,
-        "stopped_by_user",
-        (
-            "The user stopped this app session. Stop here, and say in your final "
-            "message that you stopped because they asked and can go on when they "
-            "want. To go on, ask the user to click Resume in the macOS Harness menu "
-            "bar item, or run `macos-harness resume` in a new terminal window."
         ),
     ),
     (
@@ -81,36 +72,48 @@ TEXTS = [
         ("com.apple.Terminal",),
         120,
         "app_refused",
-        ("For safety, macOS Harness may not use the app 'com.apple.Terminal'."),
+        (
+            "For safety, macOS Harness may not use the app 'com.apple.Terminal'. "
+            "Tell the user, and do not try to use it another way."
+        ),
     ),
     (
         "denied_by_policy",
         ("com.example.mail",),
         120,
         "app_refused",
-        "Your policy file says macOS Harness may not use the app 'com.example.mail'.",
+        (
+            "Your policy file says macOS Harness may not use the app 'com.example.mail'. "
+            "Tell the user; only they can change that file."
+        ),
     ),
     (
         "disabled",
         (),
         120,
         "app_refused",
-        "Your configuration has macOS Harness switched off.",
+        (
+            "macOS Harness is switched off in its policy file. Tell the user; only "
+            "they can switch it on."
+        ),
     ),
     (
         "security_process",
         ("com.apple.SecurityAgent",),
         100,
         "server_error",
-        P
-        + "This tool may not act on a system security process: com.apple.SecurityAgent",
+        P + "'com.apple.SecurityAgent' is a system password or security window, which "
+        "macOS Harness never touches. Ask the user to answer it.",
     ),
     (
         "not_approved",
         ("Clock",),
         120,
         "not_approved",
-        "The user did not allow macOS Harness to use Clock",
+        (
+            "The user did not allow macOS Harness to use Clock. Do not use it in this "
+            "turn; ask the user if you need it."
+        ),
     ),
     (
         "approval_pending",
@@ -128,21 +131,9 @@ TEXTS = [
         121,
         "approval_unavailable",
         (
-            'macOS Harness cannot ask the user to approve "Clock" because its on-screen '
-            'prompt is switched off. Ask the user to approve "Clock" in their own terminal '
-            "(`macos-harness approve`), then call this tool again. The command is refused "
-            "when you run it."
-        ),
-    ),
-    (
-        "person_only",
-        ("approve",),
-        120,
-        "not_approved",
-        (
-            "`macos-harness approve` is the user's command. It is refused from an agent "
-            "that has used an app, and from a terminal where a tool was run. Ask the "
-            "user to open a new terminal window and run it there."
+            'macOS Harness cannot ask the user about "Clock" because its on-screen '
+            'prompt is switched off. Ask the user to run `macos-harness approve --app "Clock"`, '
+            "then call this tool again."
         ),
     ),
     (
@@ -151,8 +142,9 @@ TEXTS = [
         100,
         "approval_not_saved",
         (
-            "macOS Harness could not persist the approval permanently for app "
-            "'com.apple.clock'. It holds until the helper stops."
+            "macOS Harness could not save the approval of 'com.apple.clock' to disk, "
+            "so it lasts only until the helper stops. Go on; the user can approve it "
+            "again later."
         ),
     ),
     (
@@ -200,7 +192,13 @@ TEXTS = [
             "themselves."
         ),
     ),
-    ("invalid_app", ("NoSuchApp",), 130, "no_such_app", "Invalid app: NoSuchApp"),
+    (
+        "invalid_app",
+        ("NoSuchApp",),
+        130,
+        "no_such_app",
+        "No app called NoSuchApp was found on this Mac. Call `list_apps` and use a name or bundle id from it.",
+    ),
     (
         "ambiguous_app",
         ("org.example.app", ["/Applications/A.app", "/Users/me/A.app"]),
@@ -217,14 +215,14 @@ TEXTS = [
         ("Notes",),
         131,
         "app_not_running",
-        "No running app matches Notes",
+        "Notes is not running any more: it quit or crashed. Call `get_app_state` to open it again.",
     ),
     (
         "accessibility",
         ("AXError.cannotComplete",),
         132,
         "accessibility_failed",
-        "The accessibility call failed: AXError.cannotComplete",
+        "The app did not answer an accessibility request (AXError.cannotComplete). Call `get_app_state` again; if it fails again, click by pixel or tell the user.",
     ),
     (
         "not_responding",
@@ -242,9 +240,17 @@ TEXTS = [
         (),
         100,
         "server_error",
-        P + "The app opened no window in time",
+        P
+        + "The app started but showed no window within 5 seconds. Call `get_app_state` once more; if it fails again, tell the user.",
     ),
-    ("no_windows", (), 100, "server_error", P + "The app has no window"),
+    (
+        "no_windows",
+        (),
+        100,
+        "server_error",
+        P
+        + "The app has no open window. Open one with its menu or a shortcut, or tell the user.",
+    ),
     (
         "window_not_found_at",
         ((2501, -908.0),),
@@ -264,7 +270,8 @@ TEXTS = [
         (9999,),
         100,
         "server_error",
-        P + "No element has the ID 9999",
+        P
+        + "No element has the ID 9999 in the last read. Use an ID from the newest `get_app_state` text.",
     ),
     ("key_not_found", ("ESC",), 100, "server_error", P + 'No key is called "ESC"'),
     (
@@ -399,7 +406,7 @@ TEXTS = [
         (),
         103,
         "request_timed_out",
-        "macOS Harness did not answer in time",
+        "macOS Harness did not answer within 2 minutes, so the action may or may not have run. Call `get_app_state` to see the app before you try again.",
     ),
     (
         "invalid_process",
@@ -415,7 +422,13 @@ TEXTS = [
         "server_error",
         P + "No window of Notes can be captured",
     ),
-    ("app_quit", (), 100, "server_error", P + "The app has quit"),
+    (
+        "app_quit",
+        (),
+        100,
+        "server_error",
+        P + "The app quit during the call. Call `get_app_state` to open it again.",
+    ),
     ("invalid_duration", (), 0, "usage", "--duration is not a usable time"),
     (
         "no_scroll_direction",
@@ -451,7 +464,13 @@ TEXTS = [
         "server_error",
         P + "This element is drawn by another process and has no parent in the app",
     ),
-    ("failed_to_launch", (), 100, "server_error", P + "The app could not be started"),
+    (
+        "failed_to_launch",
+        (),
+        100,
+        "server_error",
+        P + "macOS could not start the app. Tell the user.",
+    ),
     (
         "no_invalidation_monitor",
         (),
@@ -512,7 +531,6 @@ def test_what_the_person_did_is_not_reported_as_a_failure():
     assert cancelled == {
         "user_changed",
         "still_interacting",
-        "stopped_by_user",
         "turn_ended",
         "not_approved",
         "blocked_url",
@@ -541,7 +559,10 @@ def test_accessibility_failures_named():
         "(undocumented AXError)",
     ):
         error = errors.accessibility(ax_name)
-        assert error.message == f"The accessibility call failed: {ax_name}"
+        assert error.message == (
+            f"The app did not answer an accessibility request ({ax_name}). Call "
+            "`get_app_state` again; if it fails again, click by pixel or tell the user."
+        )
         assert error.code == 132
 
 
@@ -566,7 +587,11 @@ def test_ambiguous_refetch_texts_variants():
 
 
 def test_invalid_id_capture_failure_strings():
-    assert errors.invalid_element_id(9999).message == P + "No element has the ID 9999"
+    assert (
+        errors.invalid_element_id(9999).message
+        == P
+        + "No element has the ID 9999 in the last read. Use an ID from the newest `get_app_state` text."
+    )
     assert errors.invalid_element_id(9999).tag == "invalid_element_id"
     assert errors.capture_failed().message == P + "Reading the UI tree failed."
     assert errors.no_tree().message == P + "The accessibility tree is missing."

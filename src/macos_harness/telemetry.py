@@ -37,14 +37,12 @@ COMMANDS = {
     "uninstall",
     "turn-started",
     "turn-ended",
-    "stop",
-    "resume",
     "approve",
     "telemetry",
     "help",
 }
 # The person did it. Every other error is a failure of the call.
-CANCELLED = {"stopped_by_user", "user_took_over"}
+CANCELLED = {"user_took_over"}
 MAX_DURATION_MS = 2147483647
 
 

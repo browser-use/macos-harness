@@ -1,17 +1,15 @@
-"""The person: their events, the gate before every call, stop, turns."""
+"""The person: their events, the gate before every call, turns."""
 
 from __future__ import annotations
 
-import json
 import math
-from types import SimpleNamespace
 
 import fakes_g
 import pytest
 from fakes import Clock
 from fakes_g import agent, app
 
-from macos_harness import errors, events, person, protocol
+from macos_harness import errors, events, person
 
 OWN_PID = 4242
 LEFT, RIGHT, OTHER, WHEEL, KEY = 1, 3, 25, 22, 10
@@ -36,11 +34,8 @@ class World:
         monkeypatch.setattr(person, "secure_input_pid", lambda: None)
         for table in ("_drivers", "_targets", "_quiet_at"):
             monkeypatch.setattr(person, table, {})
-        monkeypatch.setattr(person, "_stops", set())
-        monkeypatch.setattr(person, "_stop_all", False)
         monkeypatch.setattr(person, "_awaiting_quiet", set())
         monkeypatch.setattr(person, "_own_pid", OWN_PID)
-        monkeypatch.setattr(person, "_last_escape", -math.inf)
 
     def call(self, who, target=NOTES, state_read=False):
         """One gated call. Returns its refusal, or None when it may run."""
@@ -58,9 +53,6 @@ class World:
 
     def event(self, kind=LEFT, pid=NOTES.pid, source_pid=0, tag=0, **more):
         person.saw(kind, source_pid, tag, pid, clock=self.clock, **more)
-
-    def escape(self, **more):
-        self.event(KEY, pid=999, keycode=person.ESCAPE, **more)
 
     def person_keeps_going(self, kind=WHEEL):
         """From now on the person sends one event during every poll of a waiting call."""
@@ -311,20 +303,6 @@ def test_an_app_is_also_known_by_bundle_id_when_its_pid_is_not(world, monkeypatc
     assert launched.path in person._quiet_at
 
 
-def test_interventions_stored_app_target_reasons(world):
-    """Per app, two kinds: the person touched it, the person stopped it."""
-    who = agent()
-    world.call(who)
-    world.call(who, MAIL)
-    world.event(pid=NOTES.pid)
-    person.stop(MAIL, clock=world.clock)
-    assert set(person._quiet_at) == {NOTES.path, MAIL.path}
-    assert set(person._stops) == {MAIL.path}
-    world.clock.sleep(6.0)
-    assert world.call(who, NOTES).name == "user_took_over"
-    assert world.call(who, MAIL).name == "stopped_by_user"
-
-
 def test_the_pointer_shows_paused_then_waiting_when_the_debounce_ends(world):
     world.call(agent())
     world.event()
@@ -340,16 +318,6 @@ def test_the_pointer_shows_paused_then_waiting_when_the_debounce_ends(world):
     assert world.timers == [] and person._awaiting_quiet == set()
 
 
-def test_gate_tells_the_menu_which_apps_are_in_use(world):
-    who = agent()
-    world.call(who)
-    world.call(who)
-    world.call(who, MAIL)
-    in_use = [call[1] for call in world.presence.calls if call[0] == "apps_in_use"]
-    assert in_use == [[NOTES.path], [NOTES.path, MAIL.path]]
-    assert person.driven() == [NOTES, MAIL]
-
-
 # --- the tap
 
 
@@ -361,7 +329,7 @@ class FakeQuartz:
     kCFRunLoopCommonModes = "common"
     kCGEventTargetUnixProcessID, kCGEventSourceUnixProcessID = 40, 41
     kCGEventSourceUserData, kCGMouseEventWindowUnderMousePointer = 42, 91
-    kCGKeyboardEventKeycode, kCGKeyboardEventAutorepeat = 9, 8
+    kCGKeyboardEventKeycode = 9
     kCGWindowListOptionIncludingWindow, kCGWindowOwnerPID = 8, "owner"
     kCGEventSourceStateHIDSystemState = 1
     kCGEventFlagMaskCommand = 0x100000
@@ -429,7 +397,7 @@ def test_input_observed_through_event_taps_re_enable_themselves(world, monkeypat
     assert person._quiet_at == {}
 
 
-def test_the_tap_reads_source_tag_target_key_and_repeat(world, monkeypatch):
+def test_the_tap_reads_source_tag_target_and_key(world, monkeypatch):
     quartz = FakeQuartz()
     monkeypatch.setattr(person, "Quartz", quartz)
     monkeypatch.setattr(person, "_tap", "tap")
@@ -440,29 +408,20 @@ def test_the_tap_reads_source_tag_target_key_and_repeat(world, monkeypatch):
     quartz.windows = {55: [{"owner": 502}]}
     seen = []
     held = {"flags": 0x100108}  # Command is down
-    person._on_event(None, KEY, {40: 501, 41: 7, 42: 3, 9: 53, 8: 1} | held, None)
+    person._on_event(None, KEY, {40: 501, 41: 7, 42: 3, 9: 53} | held, None)
     person._on_event(None, LEFT, {91: 55}, None)  # no target on it: the window's owner
     person._on_event(None, KEY, {}, None)  # nothing on it: the front app
     person._on_event(None, WHEEL, {91: 56}, None)  # a window that is gone
     assert seen == [
-        (
-            KEY,
-            7,
-            3,
-            501,
-            53,
-            True,
-            True,
-            True,
-        ),  # a key that went to an app not in front
-        (LEFT, 0, 0, 502, 0, False, False, False),
-        (KEY, 0, 0, 900, 0, False, False, False),
-        (WHEEL, 0, 0, 900, 0, False, False, False),
+        (KEY, 7, 3, 501, 53, True, True),  # a key that went to an app not in front
+        (LEFT, 0, 0, 502, 0, False, False),
+        (KEY, 0, 0, 900, 0, False, False),
+        (WHEEL, 0, 0, 900, 0, False, False),
     ]
     monkeypatch.setattr(person, "_targets", {})  # nothing driven: no lookup at all
     monkeypatch.setattr(person, "_target_pid", lambda event: 1 / 0)
     person._on_event(None, KEY, {40: 501, 9: 53}, None)
-    assert seen[-1] == (KEY, 0, 0, 0, 53, False, False, False)
+    assert seen[-1] == (KEY, 0, 0, 0, 53, False, False)
 
 
 def test_a_failing_callback_never_raises_into_the_tap(world, monkeypatch):
@@ -543,56 +502,7 @@ def test_secure_input_owner_readable(monkeypatch):
         assert person.secure_input_pid() == owner
 
 
-# --- stop
-
-
-def test_stop_user_driven_model_has_no_stop_method(world):
-    """Every later call on the stopped app fails, also a state read, also after a turn
-    end the model could send itself, until the person resumes."""
-    who = agent(signals_turns=True)
-    world.call(who)
-    world.call(who, MAIL)
-    person.stop(NOTES, clock=world.clock)
-    assert person.stopped(NOTES) and not person.stopped(MAIL)
-    world.clock.sleep(500.0)
-    for state_read in (False, True, False):
-        refusal = world.call(who, NOTES, state_read)
-        assert refusal.message == (
-            "The user stopped this app session. Stop here, and say in your final "
-            "message that you stopped because they asked and can go on when they "
-            "want. To go on, ask the user to click Resume in the macOS Harness menu "
-            "bar item, or run `macos-harness resume` in a new terminal window."
-        )
-        assert refusal.cancelled and refusal.code == 111
-    assert world.call(who, MAIL) is None
-    person.turn_ended(who)
-    person.turn_started(who)
-    assert world.read(who).name == "stopped_by_user"  # a turn end lifts nothing
-    person.resume(NOTES)
-    assert world.read(who) is None and world.call(who) is None
-
-
-def test_hosts_can_stop_app_session_pending_operations_finish(world):
-    """A stop raises nothing in the call that runs. A call that still waits for the
-    person is refused at its next poll."""
-    who = agent()
-    world.call(who)
-    person.stop(NOTES, clock=world.clock)  # returns: the running call goes on
-    person.resume(NOTES)
-    world.event()
-    real_sleep = world.clock.sleep
-
-    def stop_after_two_seconds(seconds):
-        real_sleep(seconds)
-        if world.clock.time() >= 1002.0 and not person.stopped(NOTES):
-            person.stop(NOTES, clock=world.clock)
-
-    world.clock.sleep = stop_after_two_seconds
-    assert world.call(who).name == "stopped_by_user"
-    assert world.clock.time() == pytest.approx(1002.0, abs=0.25)
-
-
-def test_the_person_using_or_stopping_the_app_interrupts_the_running_call(world):
+def test_the_person_using_the_app_interrupts_the_running_call(world):
     notes = app("Notes", pid=7)
     world.call(agent(), notes)
     since = world.clock.monotonic()
@@ -601,257 +511,6 @@ def test_the_person_using_or_stopping_the_app_interrupts_the_running_call(world)
     person.saw(person.KEY_DOWN, 0, 0, 7, clock=world.clock)  # the person types there
     assert person.interrupted(notes, since)
     assert not person.interrupted(notes, world.clock.monotonic() + 0.1)  # a later call
-    person.stop(notes, clock=world.clock)
-    assert person.interrupted(notes, world.clock.monotonic() + 0.1)
-
-
-def test_stop_with_no_app_stops_every_driven_app(world):
-    who = agent()
-    world.call(who)
-    world.call(who, MAIL)
-    person.stop(clock=world.clock)
-    assert person.stopped(NOTES) and person.stopped(MAIL)
-    assert world.presence.activity() == ["paused"]
-    person.resume()
-    assert not person.stopped(NOTES) and not person.stopped(MAIL)
-    assert world.presence.activity() == ["paused", "loading"]
-
-
-def test_a_stop_cancels_the_menu_the_agent_left_open(world, monkeypatch):
-    """The last action opened a pop-up menu, then the person stopped the app: the menu
-    stayed and took their next Return. Only a menu is cancelled, no key is sent."""
-    done = []
-    menu = object()
-    shown = {NOTES.path: menu}
-    fake_windows = SimpleNamespace(
-        shown_menu=lambda target: shown.get(target.path),
-        close_menu=lambda target: done.append(("close_menu", target.path)),
-    )
-    monkeypatch.setattr(person, "windows", fake_windows)
-    monkeypatch.setattr(
-        person, "ax", SimpleNamespace(perform=lambda el, name: done.append((el, name)))
-    )
-    monkeypatch.setattr(
-        person, "events", SimpleNamespace(post=lambda *a: done.append("key"), OWN_TAG=1)
-    )
-    who = agent()
-    world.call(who)
-    world.call(who, MAIL)
-    person.stop(clock=world.clock)
-    for _delay, call in world.timers:
-        call()
-    assert done == [(menu, "AXCancel"), ("close_menu", NOTES.path)]
-
-
-def test_stop_everything_also_refuses_an_app_not_driven_yet(world):
-    """Escape twice, the menu's Stop All or `stop`: a call on Notes was refused, and
-    the next call, on an app never driven before, ran."""
-    who = agent(signals_turns=True)
-    world.call(who)
-    person.stop(clock=world.clock)
-    assert world.call(who, MAIL, state_read=True).name == "stopped_by_user"
-    assert person.stopped(MAIL)
-    person.resume(
-        NOTES
-    )  # one app lifted: the stop of everything ends, Mail keeps its mark
-    assert world.read(who) is None
-    assert world.call(who, MAIL, state_read=True).name == "stopped_by_user"
-    person.resume()
-    assert world.read(who, MAIL) is None
-
-
-def test_a_stop_holds_when_the_helper_is_started_again(world, monkeypatch):
-    """`macos-harness helper restart` lifted every stop: they lived in memory only."""
-
-    def restarted():
-        monkeypatch.setattr(person, "_stops", set())
-        monkeypatch.setattr(person, "_stop_all", False)
-        person.start_watch(OWN_PID)
-
-    person.stop(MAIL, clock=world.clock)
-    restarted()
-    assert person.stopped(MAIL) and not person.stopped(NOTES)
-    assert world.presence.calls[-1] == ("stopped", True)  # the menu shows Resume again
-    person.stop(clock=world.clock)
-    restarted()
-    assert person.stopped(NOTES)  # everything
-    person.resume()
-    assert ("stopped", False) in world.presence.calls
-    restarted()
-    assert not person.stopped(MAIL) and not person.stopped(NOTES)
-    (protocol.state_dir() / "stops.json").write_text("{", encoding="utf-8")
-    restarted()
-    assert person.stopped(NOTES)  # a file that cannot be read stops everything
-    person.resume()
-
-
-@pytest.mark.parametrize(
-    "record",
-    [
-        {"all": True, "apps": []},
-        {"version": "0.1.9", "all": False, "apps": ["/Applications/Mail.app"]},
-    ],
-)
-def test_a_stop_of_another_version_is_dropped_at_start(world, record, caplog):
-    """A build before the Escape-twice fix wrote {"all": true} that nobody meant, and
-    0.2.0 refused every app with it until a resume. Installing a version is the
-    person's own act: the stops of another one go, and the log says so."""
-    protocol.state_dir().mkdir(parents=True, exist_ok=True)
-    (protocol.state_dir() / "stops.json").write_text(json.dumps(record), "utf-8")
-    person.start_watch(OWN_PID)
-    assert not person.stopped(NOTES) and not person.stopped(MAIL)
-    assert ("stopped", True) not in world.presence.calls  # no menu bar item for it
-    assert f"dropped the stops of version {record.get('version')}" in caplog.text
-
-
-def test_state_read_must_come_before_any_action_turn(world):
-    """After the person lifts a stop, the first action still needs a fresh state read."""
-    who = agent()
-    world.call(who)
-    person.stop(NOTES, clock=world.clock)
-    person.resume(NOTES)
-    assert world.call(who).message.startswith("The user did something in")
-    assert world.read(who) is None and world.call(who) is None
-
-
-def test_a_stop_holds_however_long_the_agent_stays_quiet(world):
-    """For a host that sends no turn signals a stop ended after 120 s with no refused
-    call, and with it the stop of everything, for every agent."""
-    who, hooked = agent(), agent("hooked", signals_turns=True)
-    world.call(who)
-    person.stop(clock=world.clock)
-    world.clock.sleep(10_000.0)
-    assert world.call(who).name == "stopped_by_user"
-    assert world.call(hooked, MAIL, state_read=True).name == "stopped_by_user"
-    person.resume()
-    assert world.read(who) is None and not person.stopped(NOTES)
-
-
-def test_the_menu_stops_and_resumes_through_the_callbacks(world, monkeypatch):
-    monkeypatch.setattr(person, "Quartz", FakeQuartz(may_listen=False))
-    monkeypatch.setattr(person, "_tap", None)
-    person.start_watch(OWN_PID)
-    who = agent()
-    world.call(who)
-    world.presence.stop_callback(NOTES)
-    assert person.stopped(NOTES)
-    world.presence.resume_callback(NOTES)
-    world.presence.stop_callback(None)
-    assert person.stopped(NOTES)
-    world.presence.resume_callback(None)
-    assert not person.stopped(NOTES)
-
-
-def test_a_stop_from_anywhere_is_shown_in_the_menu(world):
-    """The command and Escape twice have no menu pick: the first row says it."""
-    world.call(agent())
-    person.stop(NOTES, by="command")
-    person.resume(NOTES)
-    person.stop(None, by="escape")
-    shown = [call[1] for call in world.presence.calls if call[0] == "label"]
-    assert shown == [f"Stopped {NOTES.name}", "Resumed", f"Stopped {NOTES.name}"]
-    person.resume(None)
-    person.turn_ended(agent())
-    person.stop(None)  # nothing is driven any more
-    assert world.presence.calls[-1] == ("label", "Stopped every app")
-
-
-def test_stop_end_reasons_enumerated(world, caplog):
-    assert person.STOP_REASONS == ("command", "menu", "escape")
-    world.call(agent())
-    with caplog.at_level("INFO", logger="macos_harness.person"):
-        person.stop(NOTES, clock=world.clock)
-        person.stop(NOTES, by="menu", clock=world.clock)
-        world.escape()
-        world.escape()
-        person.stop(NOTES, by="made up", clock=world.clock)
-    said = [record.getMessage().split(":")[0] for record in caplog.records]
-    assert said == [
-        f"stopped by {by}" for by in ("command", "menu", "escape", "command")
-    ]
-
-
-# --- Escape twice
-
-
-def presses(world, *sequence) -> bool:
-    """Play (seconds since start, who, held) key downs. True when they stopped the app."""
-    world.call(agent())
-    start = world.clock.now
-    for at, who, *held in sequence:
-        world.clock.now = start + at
-        own = {"source_pid": OWN_PID} if who == "agent" else {}
-        world.escape(repeat=bool(held), **own)
-    return person.stopped(NOTES)
-
-
-@pytest.mark.parametrize(
-    "sequence, stops",
-    [
-        ([(0.0, "person")], False),
-        ([(0.0, "person"), (0.1, "person")], True),
-        ([(0.0, "person"), (0.45, "person")], True),
-        ([(0.0, "person"), (0.7, "person")], False),
-        ([(0.0, "agent"), (0.1, "agent")], False),
-        ([(0.0, "agent"), (0.1, "person")], False),
-        ([(0.0, "person"), (0.1, "agent"), (0.2, "person")], True),
-        ([(0.0, "person"), (0.1, "person", "held"), (0.2, "person", "held")], False),
-        (
-            [(0.0, "person"), (0.7, "person"), (1.0, "person")],
-            True,
-        ),  # the second starts a new pair
-        ([(0.0, "person"), (0.1, "person"), (0.2, "person")], True),
-    ],
-)
-def test_escape_twice_within_500_ms_stops_every_driven_app(world, sequence, stops):
-    assert presses(world, *sequence) is stops
-
-
-def test_escape_twice_with_no_app_driven_stops_nothing(world):
-    """Escape twice in an editor or a dialog, with no agent at work, stopped every app
-    and wrote it down: the harness refused every call until a resume, also after a
-    restart."""
-    world.escape()
-    world.escape()
-    assert not person.stopped(NOTES)
-    assert not (protocol.state_dir() / "stops.json").exists()
-    assert not [
-        call for call in world.presence.calls if call[0] in ("label", "stopped")
-    ]
-
-
-def test_escape_twice_while_an_app_is_driven_stops_everything_for_good(world):
-    world.call(agent())
-    world.escape()
-    world.escape()
-    assert person.stopped(NOTES) and person.stopped(MAIL)
-    record = json.loads((protocol.state_dir() / "stops.json").read_text("utf-8"))
-    assert record["all"] is True
-    person.resume()
-
-
-def test_escape_twice_counts_when_the_app_became_driven_between_the_presses(world):
-    world.escape()
-    world.call(agent())  # the agent's first call lands between the two presses
-    world.clock.sleep(0.1)
-    world.escape()
-    assert person.stopped(NOTES)
-    person.resume()
-
-
-def test_a_third_escape_does_not_pair_with_the_second(world):
-    assert presses(world, (0.0, "person"), (0.1, "person"))
-    person.resume()
-    world.clock.sleep(0.1)
-    world.escape()
-    assert not person.stopped(NOTES)
-
-
-def test_another_key_twice_stops_nothing(world):
-    world.call(agent())
-    world.event(KEY, keycode=36)
-    world.event(KEY, keycode=36)
-    assert not person.stopped(NOTES)
 
 
 # --- live: the real tap, fed only by an event that carries our tag
@@ -945,7 +604,6 @@ def test_turn_ended_without_turn_started_only_resets(world):
     assert not who.ended and who.denied == set()
     assert person._quiet_at == person._drivers == {}
     assert person.driven() == []
-    assert world.presence.calls[-1] == ("apps_in_use", [])
     assert world.call(who) is None
 
 
@@ -954,13 +612,8 @@ def test_one_agent_s_turn_end_keeps_the_marks_of_an_app_another_agent_drives(wor
     world.call(first)
     world.call(second)
     world.call(first, MAIL)
-    person.stop(NOTES, clock=world.clock)
-    person.stop(MAIL, clock=world.clock)
+    world.event(pid=NOTES.pid)
     person.turn_ended(first)
-    assert person.stopped(NOTES) and person.stopped(MAIL)  # stops outlive a turn end
-    assert person.driven() == [NOTES]
-    assert world.call(second).name == "stopped_by_user"
+    assert person.driven() == [NOTES] and NOTES.path in person._quiet_at
     person.turn_ended(second)
-    assert person.stopped(NOTES)
-    person.resume()
-    assert not person.stopped(NOTES) and not person.stopped(MAIL)
+    assert person.driven() == [] and person._quiet_at == {}

@@ -135,15 +135,6 @@ class AgentSession:
     # helper.py fills it when the session is made. policy.decide forbids these: an agent
     # may not drive its host.
     hosts: frozenset[str] = frozenset()
-    # True once a tool call came from this agent. The person's own commands (approve,
-    # resume) are then refused from it. It outlives a turn end.
-    used_tools: bool = False
-    # Of the call that is running now, whatever its session name: the first parent of
-    # the client that is no shell or wrapper, as (pid, start time), and every parent.
-    # helper.py replaces both on every call; tools.py refuses the person's commands
-    # when one of the parents has made a tool call.
-    caller: tuple[int, float] | None = None
-    parents: frozenset[tuple[int, float]] = frozenset()
     # The MACOS_HARNESS_* variables of the call that is running now. helper.py replaces
     # it on every call.
     # tools.py reads MACOS_HARNESS_DIFF, actions.py reads
@@ -164,9 +155,10 @@ class AppSession:
     # An action ran in a browser since its page was last checked against the blocked
     # list: the page may be another one now.
     page_unchecked: bool = False
-    # True when the person stopped this app or used it since the call began. tools.py
-    # sets it for each call. actions.py asks it before every event it posts, and inside
-    # a held click or key, to end the hold early.
+    # True when the person used this app since the call began, or the client went
+    # away (the host interrupted the tool). tools.py sets it for each call. actions.py
+    # asks it before every event it posts, and inside a held click or key, to end the
+    # hold early.
     cancel: Callable[[], bool] = lambda: False
     # The running app this session switched on (tree.enable, windows.watch,
     # revisions.watch). tools.py sets it at the first state read and switches the same

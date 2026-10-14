@@ -1,26 +1,24 @@
-"""The person comes first: notice their input, wait for them, stop when they say so.
+"""The person comes first: notice their input and wait for them.
 
 One listen-only event tap sees the person's clicks, scrolls and key presses. An event
 on an app we drive leaves a record for that app. The next call on it waits until the
 person has been quiet for 5 s, and an action then fails, so that the model reads the
-app again before it acts. A stop is per app and comes from the person, never from
-the model.
+app again before it acts. To stop the agent the person interrupts it in its own app;
+the helper then cancels that client's running action (helper.py).
 """
 
 from __future__ import annotations
 
 import functools
-import json
 import logging
 import math
-import os
 import threading
 import time
 
 import Quartz
 from AppKit import NSRunningApplication, NSWorkspace
 
-from . import ax, errors, events, presence, protocol, runloop, windows
+from . import ax, errors, events, presence, runloop, windows
 from .model import AgentSession, AppTarget
 
 # Left, right and other mouse down, scroll wheel, key down. No move, no key up.
@@ -30,8 +28,6 @@ CLICKS, DOCK = (1, 3, 25), "com.apple.dock"
 DEBOUNCE_S = 5.0  # the person counts as busy this long after their last event
 WAIT_CAP_S = 100.0  # how long one call waits for the person to finish
 POLL_S = 0.25
-DOUBLE_PRESS_S = 0.5  # Escape twice within this stops every driven app
-STOP_REASONS = ("command", "menu", "escape")
 
 log = logging.getLogger(__name__)
 
@@ -42,13 +38,9 @@ _targets: dict[str, AppTarget] = {}  # app path -> the app, with its newest pid
 # App path -> when the person will have been quiet for the whole debounce. The entry
 # stays until the model has read the app again.
 _quiet_at: dict[str, float] = {}
-_stops: set[str] = set()  # paths of the apps the person stopped
-# The person stopped everything: every app is refused, also one not driven yet.
-_stop_all = False
 _awaiting_quiet: set[str] = set()  # app paths with a "quiet again" timer running
 _own_pid = 0
 _tap = None
-_last_escape = -math.inf
 # How the person last went to an app themselves: (the process their last click landed
 # in, when), and when they last pressed Command-Tab or clicked the Dock.
 _clicked: tuple[int, float] = (0, -math.inf)
@@ -62,9 +54,9 @@ _switched = -math.inf
 def gate(agent: AgentSession, target: AppTarget, state_read: bool, clock=time) -> None:
     """Hold a call back while the person is using the app, or refuse it.
 
-    In order: the turn has ended; the person stopped this app; wait for them to be
-    quiet (5 s after their last event, at most 100 s); then an action fails until a
-    state read has seen what they changed.
+    In order: the turn has ended; wait for the person to be quiet (5 s after their
+    last event, at most 100 s); then an action fails until a state read has seen what
+    they changed.
     """
     if agent.ended:
         raise errors.turn_ended()
@@ -74,8 +66,6 @@ def gate(agent: AgentSession, target: AppTarget, state_read: bool, clock=time) -
         _touch_from_idle_time(target, clock)
     while True:
         now = clock.monotonic()
-        if _stop_holds(path):
-            raise errors.stopped_by_user()
         quiet_at = _quiet_at.get(path)
         if quiet_at is None or now >= quiet_at:
             break
@@ -99,109 +89,18 @@ def driven() -> list[AppTarget]:
 
 def _note_driven(agent: AgentSession, target: AppTarget) -> None:
     with _LOCK:
-        keys = _drivers.setdefault(target.path, set())
-        new = agent.key not in keys
-        keys.add(agent.key)
+        _drivers.setdefault(target.path, set()).add(agent.key)
         _targets[target.path] = target
-    if new:
-        presence.apps_in_use(driven())
 
 
-# --- stop and turns
+# --- turns
 # ------------------------------------------------------------------------------
 
 
-def _keep_stops() -> None:
-    """Write the stops down: a helper that is started again still holds them. While
-    one holds, the menu bar item stays as the way out."""
-    record = {"version": protocol.VERSION, "all": _stop_all, "apps": sorted(_stops)}
-    presence.stopped(_stop_all or bool(_stops))
-    try:
-        folder = protocol.state_dir()
-        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-        draft = folder / "stops.tmp"
-        draft.write_text(json.dumps(record), encoding="utf-8")
-        os.replace(draft, folder / "stops.json")
-    except OSError as error:
-        log.warning("the stops were not written down: %s", error)
-
-
-def load_stops() -> None:
-    """At helper start: the stops the last helper held. A file that cannot be read
-    stops everything, until the person resumes. Stops of another version are dropped:
-    installing it was the person's own act (and an older one wrote stops nobody made)."""
-    global _stop_all
-    try:
-        record = json.loads((protocol.state_dir() / "stops.json").read_text("utf-8"))
-        everything, paths = bool(record["all"]), [str(path) for path in record["apps"]]
-        if record.get("version") != protocol.VERSION:
-            log.warning("dropped the stops of version %s", record.get("version"))
-            return
-    except FileNotFoundError:
-        return
-    except (OSError, ValueError, KeyError, TypeError):
-        everything, paths = True, []
-    with _LOCK:
-        _stop_all = _stop_all or everything
-        _stops.update(paths)
-    if _stop_all or _stops:  # nothing is drawn at start when nothing holds
-        presence.stopped(True)
-
-
-def stop(target: AppTarget | None = None, by: str = "command", clock=time) -> None:
-    """The person stops one app, or everything: every driven app and any app a call
-    names from now on. A running action sends nothing more."""
-    global _stop_all
-    now = clock.monotonic()
-    with _LOCK:
-        _stop_all = _stop_all or target is None
-        paths = [target.path] if target else list(_drivers)
-        for path in paths:
-            _stops.add(path)
-            # After a resume the first action must follow a fresh state read.
-            _quiet_at[path] = now
-        names = ", ".join(_targets[path].name for path in paths if path in _targets)
-        open_menus = [_targets[path] for path in paths if path in _targets]
-        _keep_stops()
-    for (
-        stopped_app
-    ) in open_menus:  # a menu the agent left open would take the next keys
-        _later(0.0, lambda target=stopped_app: _cancel_menu(target))
-    log.info("stopped by %s: %s", by if by in STOP_REASONS else "command", paths)
-    presence.pointer_activity("paused")
-    presence.label(f"Stopped {names or 'every app'}")  # the menu's first row
-
-
-def resume(target: AppTarget | None = None) -> None:
-    """The person lifts a stop: of one app (the other marks stay), or of everything."""
-    global _stop_all
-    with _LOCK:
-        _stop_all = False
-        _stops.difference_update([target.path] if target else set(_stops))
-        _keep_stops()
-    presence.pointer_activity("loading")
-    presence.label("Resumed")
-
-
-def stopped(target: AppTarget) -> bool:
-    return target.path in _stops or _stop_all
-
-
 def interrupted(target: AppTarget, since: float) -> bool:
-    """The person stopped this app, or used it after `since` (a monotonic time): the
-    action that is running sends nothing more."""
-    used = _quiet_at.get(target.path, -math.inf) - DEBOUNCE_S
-    return stopped(target) or used >= since
-
-
-def _stop_holds(path: str) -> bool:
-    """True while a stop is in force for this call. Only the person lifts it. Under a
-    stop of everything the refused app gets a mark of its own."""
-    with _LOCK:
-        if path not in _stops and not _stop_all:
-            return False
-        _stops.add(path)
-        return True
+    """The person used the app after `since` (a monotonic time): the action that is
+    running sends nothing more."""
+    return _quiet_at.get(target.path, -math.inf) - DEBOUNCE_S >= since
 
 
 def turn_started(agent: AgentSession) -> None:
@@ -209,8 +108,7 @@ def turn_started(agent: AgentSession) -> None:
 
 
 def turn_ended(agent: AgentSession) -> None:
-    """Forget what this agent drove: person records, refused apps. A stop stays: only
-    the person lifts it (a turn end the model can send itself must not)."""
+    """Forget what this agent drove: person records, refused apps."""
     # Only a host that also says when a turn starts can be held until the next one.
     agent.ended = agent.signals_turns
     agent.denied.clear()
@@ -220,7 +118,6 @@ def turn_ended(agent: AgentSession) -> None:
             if not keys:  # another agent that still drives the app keeps its marks
                 for table in (_drivers, _targets, _quiet_at):
                     table.pop(path, None)
-    presence.apps_in_use(driven())
 
 
 # --- noticing the person
@@ -231,9 +128,6 @@ def start_watch(own_pid: int) -> None:
     """Called once when the helper starts."""
     global _own_pid
     _own_pid = own_pid
-    load_stops()
-    presence.on_stop(lambda target=None: stop(target, by="menu"))
-    presence.on_resume(resume)
     runloop.on_main(_start_tap)
 
 
@@ -243,7 +137,6 @@ def saw(
     tag: int,
     pid: int,
     keycode: int = 0,
-    repeat: bool = False,
     clock=time,
     stray: bool = False,
     command: bool = False,
@@ -254,7 +147,7 @@ def saw(
     there holds the person's input (a pop-up of a web page): it was meant for the app
     they are in. It does not count, and the menu is closed so the next one gets there.
     """
-    global _last_escape, _clicked, _switched
+    global _clicked, _switched
     if kind not in EVENT_TYPES or source_pid == _own_pid or tag == events.OWN_TAG:
         return
     now = clock.monotonic()
@@ -265,13 +158,6 @@ def saw(
             _clicked = (pid, now)
     elif kind == KEY_DOWN and keycode == TAB and command:
         _switched = now
-    if kind == KEY_DOWN and keycode == ESCAPE and not repeat:
-        pair = now - _last_escape <= DOUBLE_PRESS_S
-        _last_escape = -math.inf if pair else now
-        if (
-            pair and _drivers
-        ):  # the brake of a running agent: with none, an ordinary key
-            stop(by="escape", clock=clock)
     path = _driven_path(pid)
     if path is None:
         return
@@ -298,17 +184,6 @@ def _tell_when_quiet(path: str, clock) -> None:
     if path not in _awaiting_quiet:
         _awaiting_quiet.add(path)
         _later(DEBOUNCE_S, check)
-
-
-def _cancel_menu(target: AppTarget) -> None:
-    """Cancel the menu a stopped app has open, if it has one. Nothing else is sent."""
-    try:
-        menu = windows.shown_menu(target)
-        if menu is not None:
-            ax.perform(menu, "AXCancel")
-            windows.close_menu(target)
-    except errors.HarnessError:
-        pass
 
 
 def _close_menu(target: AppTarget) -> None:
@@ -379,7 +254,6 @@ def _on_event(proxy, kind, event, refcon):
             field(Quartz.kCGEventSourceUserData),
             pid,
             field(Quartz.kCGKeyboardEventKeycode),
-            bool(field(Quartz.kCGKeyboardEventAutorepeat)),
             stray=bool(pid) and _stray(event, kind, pid),
             command=bool(
                 Quartz.CGEventGetFlags(event) & Quartz.kCGEventFlagMaskCommand

@@ -58,14 +58,12 @@ CONTRACT = {
         [
             "gate",
             "after_state_read",
-            "stop",
-            "resume",
             "turn_started",
             "turn_ended",
             "start_watch",
         ]
     )
-    | {"stopped": False, "interrupted": False, "driven": []},
+    | {"interrupted": False, "driven": []},
     "windows": dict.fromkeys(["open_menu", "watch", "unwatch"])
     | {"key_window": WINDOW, "extra_windows": []},
     "tree": dict.fromkeys(["read", "enable", "disable", "disable_all", "ask_once"]),
@@ -81,9 +79,7 @@ CONTRACT = {
     "instructions": {"prefix": None},
     "install": {"install": ["/home/skill/SKILL.md"], "uninstall": None}
     | {"skill_text": "the skill\n", "hook_note": None},
-    "presence": dict.fromkeys(
-        ["pointer_activity", "label", "halo", "live_view", "turn_done"]
-    ),
+    "presence": dict.fromkeys(["pointer_activity", "halo", "live_view", "turn_done"]),
 }
 
 

@@ -151,23 +151,6 @@ def test_app_sessions_are_per_agent_and_app(world):
     assert sessions.agent(50, {}) is one  # the agent keeps its turn marks
 
 
-def test_every_call_says_which_process_is_behind_it_whatever_its_session_name():
-    sessions = tree(*PLAIN)
-    for env in ({}, {"MACOS_HARNESS_SESSION": "run-7"}):
-        agent = sessions.agent(50, env)
-        assert agent.caller == (30, 1030.0)  # the agent, not the shell it started
-        assert agent.parents == {
-            (40, 1040.0),
-            (30, 1030.0),
-            (20, 1020.0),
-            (10, 1010.0),
-            (1, 1001.0),
-        }
-    assert sessions.agent(70, {"MACOS_HARNESS_SESSION": "run-7"}).parents >= {
-        (60, 1060.0)
-    }
-
-
 def test_an_agent_whose_process_exited_is_forgotten_once():
     table = {pid: (parent, path, 1000.0 + pid) for pid, parent, path in PLAIN}
     sessions = helper.Sessions(process=table.get)
@@ -368,13 +351,13 @@ def test_each_call_leaves_one_line_in_the_log_that_names_no_app(world, capsys):
 def test_telemetry_gets_the_command_and_nothing_about_the_app(world, monkeypatch):
     seen = []
     monkeypatch.setattr(helper.telemetry, "capture_cli", lambda *a: seen.append(a))
-    world.person.answers["gate"] = errors.stopped_by_user()
+    world.person.answers["gate"] = errors.still_interacting("/Applications/Demo.app")
     answer("get_app_state", "Demo", env={"MACOS_HARNESS_TELEMETRY": "0"})
     command, success, seconds, env, error_name = seen[0]
     assert (command, success, error_name) == (
         "get_app_state",
         False,
-        "stopped_by_user",
+        "user_took_over",
     )
     assert env == {"MACOS_HARNESS_TELEMETRY": "0"} and 0 <= seconds < 5
 
@@ -482,6 +465,50 @@ def test_shutdown_waits_for_the_running_call_and_refuses_new_ones(served):
         sock.connect(protocol.socket_path())  # nobody accepts any more
 
 
+# A client that sends one call and waits for its reply, as the real one does.
+WAITING_CLIENT = """
+import socket, sys, time
+from macos_harness import protocol
+env = {"MACOS_HARNESS_SESSION": "cut"}
+message = protocol.request(sys.argv[1:], None, env, time.time() + 120)
+with socket.socket(socket.AF_UNIX) as sock:
+    sock.connect(protocol.socket_path())
+    protocol.call(sock, message)
+"""
+
+
+def test_a_killed_client_stops_its_running_action_at_the_next_key(served):
+    """The host's interrupt is the stop button: Ctrl+C or Esc ends the tool's process,
+    and a long type_text, hold or drag stops at its next event."""
+    typed = []
+
+    def type_text(app, text):
+        for key in text:
+            if app.cancel():
+                typed.append("cancelled")
+                return
+            typed.append(key)
+            time.sleep(0.01)
+
+    served.actions.answers["type_text"] = type_text
+    session = {"MACOS_HARNESS_SESSION": "cut"}
+    assert call(message("get_app_state", "Demo", env=session))["result"]["exit"] == 0
+    client = subprocess.Popen(
+        [sys.executable, "-c", WAITING_CLIENT, "type_text", "Demo", "x" * 500]
+    )
+    deadline = time.time() + 10
+    while len(typed) < 5:
+        assert time.time() < deadline, "typing never began"
+        time.sleep(0.005)
+    client.kill()
+    client.wait()
+    at_kill = len(typed)
+    while typed[-1] != "cancelled":
+        assert time.time() < deadline, "typing went on after the client was killed"
+        time.sleep(0.005)
+    assert len(typed) - at_kill <= 2  # at most the key on its way, then no other
+
+
 def test_a_permission_error_makes_the_helper_exit_after_the_reply(served, monkeypatch):
     stops = []
     monkeypatch.setattr(helper, "shutdown", lambda: stops.append(helper.STATE.running))
@@ -503,7 +530,7 @@ def test_a_permission_error_makes_the_helper_exit_after_the_reply(served, monkey
 def test_other_errors_do_not_end_the_helper(served, monkeypatch):
     stops = []
     monkeypatch.setattr(helper, "shutdown", lambda: stops.append(1))
-    served.person.answers["gate"] = errors.stopped_by_user()
+    served.person.answers["gate"] = errors.still_interacting("/Applications/Demo.app")
     call(message("get_app_state", "Demo"))
     time.sleep(0.05)
     assert stops == []

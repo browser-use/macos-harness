@@ -55,7 +55,7 @@ CLICK_GAP = 0.1  # seconds between the clicks of a double click
 # DRAG_MAX steps. Measured: an AppKit drag session (Finder, a drop target) drops with
 # steps of 26 points 20 ms apart, 0 of 6 with steps of 65 points or more.
 DRAG_SPAN, DRAG_STEP, DRAG_MAX = 20.0, 0.02, 60
-LONG_WAIT = 0.1  # a wait longer than this ends when the person stops the app
+LONG_WAIT = 0.1  # a wait longer than this ends when the call is cancelled
 PRESS_JOIN = 0.25  # seconds a press that opened no menu gets to come back
 FILL_WAIT, FILL_POLL = 0.25, 0.01  # a menu opened to be filled: longest open, poll
 MIN_EXTENT = 100.0  # a page is never shorter than this many points
@@ -287,8 +287,8 @@ def _pause(seconds: float, cancel) -> None:
 
 
 def _go_on(app: AppSession) -> None:
-    """Before every event of an action: when the person stopped the app or used it
-    since the call began, nothing more is sent."""
+    """Before every event of an action: when the person used the app since the call
+    began, or the client went away (the host interrupted it), nothing more is sent."""
     if app.cancel():
         raise errors.user_changed(app.target.path)
 

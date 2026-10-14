@@ -114,11 +114,11 @@ def test_the_file_panel_service_stands_for_an_app_the_agent_reads(monkeypatch):
     assert apps.panel_owner([notes, numbers]) == numbers  # the newest first
     assert asked == [50]
     shown[50] = None
-    with pytest.raises(errors.HarnessError, match="Invalid app"):
+    with pytest.raises(errors.HarnessError, match="No app called"):
         apps.panel_owner([notes, numbers])
     assert 77 not in asked  # unrelated apps are never read
     asked.clear()
-    with pytest.raises(errors.HarnessError, match="Invalid app"):
+    with pytest.raises(errors.HarnessError, match="No app called"):
         apps.panel_owner([AppTarget("/A/Off.app", "dev.off", "Off", None)])
     assert asked == []  # not running: nothing to read
 
@@ -153,7 +153,7 @@ def test_after_approval_app_argument_replaced_full_app_path(system):
     assert target.path == path
     with pytest.raises(errors.HarnessError) as raised:
         apps.running(target)
-    assert raised.value.message == f"No running app matches {path}"
+    assert raised.value.message == errors.app_not_running(path).message
 
 
 def test_path_bare_executable_app_bundle_rejected(system, tmp_path):
@@ -165,7 +165,7 @@ def test_path_bare_executable_app_bundle_rejected(system, tmp_path):
     for identifier in (str(tool), str(folder), str(tmp_path), "/no/such/Thing.app"):
         with pytest.raises(errors.HarnessError) as raised:
             apps.resolve(identifier)
-        assert raised.value.message == f"Invalid app: {identifier}"
+        assert raised.value.message == errors.invalid_app(identifier).message
         assert (raised.value.code, raised.value.name) == (130, "no_such_app")
 
 
@@ -174,7 +174,7 @@ def test_nothing_found_is_an_invalid_app(system, identifier):
     install(system, "TextEdit", "com.apple.TextEdit")
     with pytest.raises(errors.HarnessError) as raised:
         apps.resolve(identifier)
-    assert raised.value.message == f"Invalid app: {identifier}"
+    assert raised.value.message == errors.invalid_app(identifier).message
 
 
 def test_process_name_accepted_app_identifier(system):
@@ -243,10 +243,13 @@ def test_pid_ids(system):
     # A bundled process keeps its path, so the rules about paths still see it.
     assert apps.resolve("#pid:322") == AppTarget("/Apps/B.app", "dev.b", "Bundled", 322)
     for identifier in ("#pid:999", "#pid:", "#pid:abc"):
-        with pytest.raises(errors.HarnessError, match="Invalid app"):
+        with pytest.raises(errors.HarnessError, match="No app called"):
             apps.resolve(identifier)
     system.procs = []
-    with pytest.raises(errors.HarnessError, match="No running app matches #pid:321"):
+    with pytest.raises(
+        errors.HarnessError,
+        match="#pid:321 is not running any more: it quit or crashed. Call `get_app_state` to open it again.",
+    ):
         apps.running(target)
 
 
@@ -274,7 +277,7 @@ def test_an_app_that_quit_has_its_own_error(system):
         131,
         "app_not_running",
     )
-    assert raised.value.message == f"No running app matches {path}"
+    assert raised.value.message == errors.app_not_running(path).message
 
 
 def test_the_pid_is_refreshed_per_call(system):
@@ -364,7 +367,7 @@ def test_launch_readiness_wait_has_budget_about_5_s(system, monkeypatch):
         apps.launch(launch.target)
     assert (
         raised.value.message
-        == "macOS Harness error 100: The app opened no window in time"
+        == "macOS Harness error 100: The app started but showed no window within 5 seconds. Call `get_app_state` once more; if it fails again, tell the user."
     )
     assert apps.LAUNCH_LIMIT == 5.0
     assert 5.0 <= launch.clock.elapsed <= 5.05 + 1e-6
@@ -385,7 +388,9 @@ def test_a_window_error_other_than_no_window_also_keeps_waiting(system, monkeypa
 def test_an_app_that_does_not_open(system, monkeypatch):
     launch = Launch(monkeypatch, system)
     system.starts = None
-    with pytest.raises(errors.HarnessError, match="100: The app could not be started"):
+    with pytest.raises(
+        errors.HarnessError, match="100: macOS could not start the app. Tell the user."
+    ):
         apps.launch(launch.target)
     assert launch.asked == []
 
@@ -598,7 +603,10 @@ def test_live_resolve_reads_the_real_mac():
         target = apps.resolve(identifier)
         assert (target.path, target.bundle_id) == (path, "com.apple.Dictionary")
     assert apps.kind(apps.resolve("Dictionary")) == AppKind()
-    with pytest.raises(errors.HarnessError, match="Invalid app: /bin/ls"):
+    with pytest.raises(
+        errors.HarnessError,
+        match="No app called /bin/ls was found on this Mac. Call `list_apps` and use a name or bundle id from it.",
+    ):
         apps.resolve("/bin/ls")
     rows = apps.list_apps()
     assert rows and all(row["isRunning"] for row in rows[:1])

@@ -36,7 +36,10 @@ ERRORS = {
     ),
     "methodNotFound": (-32601, "Method not found"),
     "deadlineExceeded": (-32000, "The deadline of the request has passed"),
-    "stopping": (-32002, "macOS Harness helper is unavailable."),
+    "stopping": (
+        -32002,
+        "The macOS Harness helper is shutting down. Run the command again.",
+    ),
     "responseTooLarge": (-32001, "The response is larger than one frame may be"),
 }
 

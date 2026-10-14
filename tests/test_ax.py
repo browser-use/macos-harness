@@ -151,7 +151,10 @@ def test_remove_single_read_fallback_top(system):
     system.fail["get_many"] = CANNOT_COMPLETE
     with pytest.raises(errors.HarnessError) as failure:
         ax.get_many({}, ["AXRole", "AXTitle"])
-    assert name_of(failure) == "The accessibility call failed: AXError.cannotComplete"
+    assert (
+        name_of(failure)
+        == "The app did not answer an accessibility request (AXError.cannotComplete). Call `get_app_state` again; if it fails again, click by pixel or tell the user."
+    )
     assert len(system.calls) == 1  # no retry name by name
 
 
@@ -237,7 +240,7 @@ def test_unsupported_attributes_remembered_so_they_asked_again(system):
 def test_get_raises_when_the_app_cannot_answer(system, code):
     with pytest.raises(errors.HarnessError) as failure:
         ax.get({"codes": {"AXRole": code}}, "AXRole")
-    assert name_of(failure) == f"The accessibility call failed: {ax.error_name(code)}"
+    assert name_of(failure) == errors.accessibility(ax.error_name(code)).message
 
 
 def test_no_ax_messaging_timeout_is_set():

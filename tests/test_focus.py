@@ -310,7 +310,9 @@ def test_front_app_that_does_not_come_back_is_a_timeout(monkeypatch):
     enforcer = r.focus.enforcer(r.app.target)
     with pytest.raises(errors.HarnessError) as caught, enforcer.active(None):
         r.front[0] = APP_PID
-    assert caught.value.message.endswith("The app opened no window in time")
+    assert caught.value.message.endswith(
+        "The app started but showed no window within 5 seconds. Call `get_app_state` once more; if it fails again, tell the user."
+    )
     assert 2.0 <= r.clock.now - start < 2.1
 
 

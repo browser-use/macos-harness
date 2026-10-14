@@ -151,7 +151,10 @@ def test_transport_error_texts():
         "errorName": "notAuthenticated",
         "data": None,
     }
-    assert said["stopping"]["message"] == "macOS Harness helper is unavailable."
+    assert (
+        said["stopping"]["message"]
+        == "The macOS Harness helper is shutting down. Run the command again."
+    )
 
 
 def test_version_mismatch_text_says_what_to_do():
@@ -169,10 +172,11 @@ def test_version_mismatch_text_says_what_to_do():
 
 
 def test_the_json_form_of_a_failed_call():
-    assert protocol.failure(errors.stopped_by_user())["error"] == {
-        "code": 111,
-        "name": "stopped_by_user",
-        "message": errors.stopped_by_user().message,
+    took_over = errors.still_interacting("/Applications/Notes.app")
+    assert protocol.failure(took_over)["error"] == {
+        "code": 110,
+        "name": "user_took_over",
+        "message": took_over.message,
         "cancelled": True,
     }
     assert (

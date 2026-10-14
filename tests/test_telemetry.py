@@ -94,7 +94,6 @@ def test_every_tool_and_command_name_may_be_sent() -> None:
 def test_status_is_cancelled_only_when_the_person_did_it(monkeypatch) -> None:
     status = lambda *args: captured(monkeypatch, "click", *args)["status"]
     assert status(True, 1) == "ok"
-    assert status(False, 1, None, "stopped_by_user") == "cancelled"
     assert status(False, 1, None, "user_took_over") == "cancelled"
     assert status(False, 1, None, "no_such_app") == "failed"
     assert status(False, 1) == "failed"

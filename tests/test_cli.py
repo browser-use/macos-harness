@@ -208,9 +208,18 @@ def test_the_reply_is_printed_and_its_exit_code_returned(server, capsys):
 
 
 def test_a_failed_call_is_sent_once_and_ends_the_chain(server, capsys):
-    served = server(ok("", "Invalid app: Nope\n", 1))
+    served = server(
+        ok(
+            "",
+            "No app called Nope was found on this Mac. Call `list_apps` and use a name or bundle id from it.\n",
+            1,
+        )
+    )
     assert cli.main(["click", "--app", "Nope", "1"]) == 1  # `&&` stops here
-    assert capsys.readouterr() == ("", "Invalid app: Nope\n")
+    assert capsys.readouterr() == (
+        "",
+        "No app called Nope was found on this Mac. Call `list_apps` and use a name or bundle id from it.\n",
+    )
     assert len(served.requests) == 1  # no retry of an action
 
 
@@ -259,7 +268,10 @@ def test_a_helper_that_never_answers_is_a_timeout(server, capsys, monkeypatch):
     release = threading.Event()
     server(lambda request: release.wait(10))
     assert cli.main(["get_app_state", "Demo"]) == 1
-    assert capsys.readouterr().err == "macOS Harness did not answer in time\n"
+    assert (
+        capsys.readouterr().err
+        == "macOS Harness did not answer within 2 minutes, so the action may or may not have run. Call `get_app_state` to see the app before you try again.\n"
+    )
     release.set()
 
 

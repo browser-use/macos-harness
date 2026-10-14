@@ -11,7 +11,6 @@ import dataclasses
 import importlib
 import json
 import math
-import os
 import time
 import traceback
 from collections.abc import Callable
@@ -50,18 +49,6 @@ DIRECTIONS = {w[:n]: w for w in ("up", "down", "left", "right") for n in (1, len
 SELECTIONS = ("text", "cursor_before", "cursor_after")
 # The commands `--help` names. The rest are for the person and for the host's hooks.
 HELP_COMMANDS = ("doctor", "skill", "install", "uninstall", "telemetry")
-# What the person sees while a tool runs, and after it: "Clicking in Safari".
-LABELS = {
-    "click": ("Clicking", "Clicked"),
-    "drag": ("Dragging", "Dragged"),
-    "scroll": ("Scrolling", "Scrolled"),
-    "press_key": ("Pressing a key", "Pressed a key"),
-    "type_text": ("Typing text", "Typed text"),
-    "set_value": ("Setting a value", "Set a value"),
-    "select_text": ("Selecting text", "Selected text"),
-    "perform_secondary_action": ("Performing an action", "Performed an action"),
-    "paste": ("Pasting", "Pasted"),
-}
 
 
 class NeedStdin(Exception):
@@ -87,6 +74,8 @@ class Call:
     agent: AgentSession
     cwd: str
     deadline: float  # time.time() seconds at which the client gives up
+    # True once the client is gone (the host interrupted the tool): stop the action
+    abandoned: Callable[[], bool] = lambda: False
 
 
 class Result(NamedTuple):
@@ -188,12 +177,12 @@ def _session(call: Call, state_read: bool):
     mods.person.gate(agent, target, state_read)
     with mods.helper.app_queue(target):
         # The wait for the app's queue may have been long: the person may have taken
-        # the app or stopped it meanwhile, and the client may have given up.
+        # the app meanwhile, and the client may have given up or gone.
         mods.person.gate(agent, target, state_read)
         _still_wanted(call)
         app = mods.helper.SESSIONS.app(agent, target)
         began = time.monotonic()
-        app.cancel = lambda: mods.person.interrupted(target, began)
+        app.cancel = lambda: call.abandoned() or mods.person.interrupted(target, began)
         try:
             yield app, target
         except errors.HarnessError as error:
@@ -206,7 +195,8 @@ def _still_wanted(call: Call, planned: float = 0.0) -> None:
     """Refuse a call whose client has given up, or will have before the action ends
     (`planned` seconds of holds and typing): done after that, the model would not
     know and would do it again."""
-    if call.deadline and time.time() + planned >= call.deadline - DEADLINE_MARGIN_S:
+    late = call.deadline and time.time() + planned >= call.deadline - DEADLINE_MARGIN_S
+    if late or call.abandoned():
         raise errors.request_timed_out()
 
 
@@ -371,14 +361,11 @@ def _act(
             else:
                 where.append(app.shot.to_screen(*item))
         _still_wanted(call, planned)  # the settle and the lookups above took their time
-        doing, done = LABELS[call.name]
         mods.presence.pointer_activity("idle")
-        mods.presence.label(f"{doing} in {target.name}")
         # Set before the action: one that posted its events and then failed (the
         # person took over, the front app was not put back in time) changed the app too.
         app.needs_settle, app.page_unchecked = True, kind.http or kind.chromium
         send(app, *where)
-        mods.presence.label(f"{done} in {target.name}")
         mods.presence.pointer_activity("loading")
     return Result(ACTION_LINE)
 
@@ -552,7 +539,7 @@ def let_go(agent: AgentSession) -> None:
         with mods.helper.app_queue(app.target):
             _switch_off(app)
     mods.helper.SESSIONS.drop(agent)
-    if not mods.person.driven():  # another agent still drives an app: its rows stay
+    if not mods.person.driven():  # another agent still drives an app: its halo stays
         mods.presence.turn_done()
 
 
@@ -566,70 +553,8 @@ def _named_app(call: Call) -> AppTarget | None:
     return mods.apps.resolve(name) if name else None
 
 
-# The process behind every tool call so far: (pid, start time) of the client's first
-# parent that is no shell or wrapper. Also written to callers.json in the state
-# folder, so that a helper started again (by `helper restart`, or after a kill) still
-# knows them. The start time tells a reused pid apart.
-_callers: set[tuple[int, float]] = set()
-
-
-def _callers_file():
-    return protocol.state_dir() / "callers.json"
-
-
-def _stored_callers() -> set[tuple[int, float]]:
-    try:
-        rows = json.loads(_callers_file().read_text("utf-8"))
-        return {(int(pid), float(start)) for pid, start in rows}
-    except (OSError, ValueError, TypeError):
-        return set()
-
-
-def _remember_caller(caller: tuple[int, float]) -> None:
-    """Keep the caller, on disk too. Callers whose process is gone are dropped there."""
-    if caller in _callers:
-        return
-    _callers.add(caller)
-    from .helper import process
-
-    def lives(pid: int, start: float) -> bool:
-        return (process(pid) or (0, "", None))[2] == start
-
-    kept = {row for row in _stored_callers() if lives(*row)} | {caller}
-    with contextlib.suppress(OSError):
-        folder = protocol.state_dir()
-        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-        draft = folder / "callers.tmp"
-        draft.write_text(json.dumps(sorted(kept)), "utf-8")
-        os.replace(draft, _callers_file())
-
-
-def _person_only(call: Call) -> None:
-    """Approve and resume are the person's: an agent that has used an app cannot lift
-    its own stop or approve itself, under another session name, through a script or
-    after restarting the helper. (The person's terminal has other parents.) A guard
-    against a model that follows a hint, not a wall: a process cut loose from its
-    parents, or one that edits the state folder, gets through."""
-    known = _callers | _stored_callers()
-    if call.agent.used_tools or call.agent.parents & known:
-        raise errors.person_only(call.name)
-
-
-def stop(call: Call) -> Result:
-    target = _named_app(call)
-    mods.person.stop(target)
-    return Result(f"Stopped {target.name if target else 'every app'}.")
-
-
-def resume(call: Call) -> Result:
-    _person_only(call)
-    target = _named_app(call)
-    mods.person.resume(target)
-    return Result(f"Resumed {target.name if target else 'every app'}.")
-
-
 def approve(call: Call) -> Result:
-    _person_only(call)
+    """The person approves an app ahead of time, for a run with nobody at the Mac."""
     target = _named_app(call)
     if target is None:
         raise errors.usage("app")
@@ -875,8 +800,6 @@ COMMANDS = {
     "uninstall": _tool(uninstall, "agent scope", "agent", defaults={"scope": "user"}),
     "turn-started": _tool(turn_started),
     "turn-ended": _tool(turn_ended),
-    "stop": _tool(stop, "app", "app"),
-    "resume": _tool(resume, "app", "app"),
     "approve": _tool(approve, "app always", "app", defaults={"always": False}),
     "telemetry": _tool(telemetry, bare="action"),
     "help": _tool(show_help, bare="tool"),
@@ -989,9 +912,15 @@ def parse(argv: list[str]) -> tuple[str, dict[str, Any]]:
 
 
 def execute(
-    argv: list[str], stdin: str | None, agent: AgentSession, cwd: str, deadline: float
+    argv: list[str],
+    stdin: str | None,
+    agent: AgentSession,
+    cwd: str,
+    deadline: float,
+    abandoned: Callable[[], bool] = lambda: False,
 ) -> Outcome:
-    """Run one call and say what to print. Raises only NeedStdin."""
+    """Run one call and say what to print. Raises only NeedStdin. `abandoned` turns
+    True once the client has gone: the running action then stops."""
     as_json, name = "--json" in argv, None
     try:
         name, args = parse(argv)
@@ -1006,11 +935,7 @@ def execute(
             args.pop(tool.stdin, None)
             if stdin.removesuffix("\n"):  # a heredoc adds one newline: exactly one goes
                 args[tool.stdin] = stdin.removesuffix("\n")
-        if name in TOOLS:
-            agent.used_tools = True
-            if agent.caller:
-                _remember_caller(agent.caller)
-        result = tool.run(Call(name, args, agent, cwd, deadline))
+        result = tool.run(Call(name, args, agent, cwd, deadline, abandoned))
     except NeedStdin:
         raise
     except errors.HarnessError as error:

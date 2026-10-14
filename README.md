@@ -78,12 +78,8 @@ and it is all an agent needs to read.
   `ask_before_first_use = true` in `policy.toml` in the state folder; `strict = true`
   forbids terminal apps too
 - Notices when you touch an app the agent is using
-- Stops when you say so: the menu bar item, Escape twice while an agent works (needs the Input Monitoring
-  permission), or `macos-harness stop`. A stop holds until you resume, from the menu
-  bar item or with `macos-harness resume` in your own terminal, also when the helper
-  is started again. `approve` and `resume` are refused from the agent's own process
-  tree: that guards against a model that follows a hint, it is not a wall against a
-  program that sets out to get around it
+- Stops when its agent is interrupted: Esc or Ctrl+C in the agent's own app ends the
+  running action at its next key or click. There is no stop button of its own
 - Limits worth knowing: pages on the `blocked_urls` list of a policy file are noticed
   when the page is read and before the action after one that may have changed it, not
   while a page is loading; apps built on Electron or a plain web view give no URL to

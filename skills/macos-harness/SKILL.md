@@ -69,17 +69,17 @@ macos-harness drag --app TextEdit --from_x 200 --from_y 300 --to_x 500 --to_y 30
 
 ## When a command fails
 
-- `No session is open`, `No element has the ID`, `older read`, `went away`, `No running app`: run `get_app_state`, use the new numbers.
-- `Call this tool again`: run it again, do not end your turn. `stopped this app session`: stop and tell the person.
+- `No session is open`, `No element has the ID`, `older read`, `went away`, `not running any more`: run `get_app_state`, use the new numbers.
+- `Call this tool again`: run it again, do not end your turn.
 - `turn is over`: end your turn; it works after the person's next message.
 - `may not`, `switched off`, `did not allow`, `cannot work without`, `Mac is locked`: tell the person, try no other route.
-- `Invalid app`: use a bundle id from `list_apps`.
-- `no window in time`, `has no window`, `could not be started`: no window; read once more, then tell the person.
+- `No app called`: use a bundle id from `list_apps`.
+- `showed no window`, `has no open window`, `could not start the app`: no window; read once more, then tell the person.
 - `off screen`: scroll to it and read, or click by pixel. `No window of the app is at`: use pixels of the newest screenshot.
 - `cannot be set`, `selection be set`: click the field, use keys and `type_text`. `does not contain that text`: copy it from the newest read. `not among the secondary actions`: use a printed name.
 - `No key`, `This key`, `chord`: one normal key per press, after its modifiers. `was given`: give the flag it names.
 - `clipboard`, `paste`: read, click the target field, paste again. `menu`: press Escape, read, reopen the menu.
-- `accessibility call`, `UI tree failed`, `keyboard layout`, `not answer in time`, any other message: do what it says. If it says nothing, read, retry once, then use pixels or tell the person.
+- `accessibility request`, `UI tree failed`, `keyboard layout`, `did not answer within`, any other message: do what it says. If it says nothing, read, retry once, then use pixels or tell the person.
 - Exit code 2: copy the example line it prints.
 
 ## Finish
@@ -87,7 +87,7 @@ macos-harness drag --app TextEdit --from_x 200 --from_y 300 --to_x 500 --to_y 30
 - Work until the whole request is done. Trying an action is not done: the state you read must show the result.
 - If an action changed nothing, gave no result or stopped at an in-between page, try another way. Answer only when the requested page, information or state is visible, or name the concrete blocker.
 - Prefer a result already on screen to wider views like "Show All". Once it is visible, stop exploring and answer.
-- Never run `macos-harness approve`, `resume` or `helper`: they are the person's.
+- Never run `macos-harness approve` or `helper`: they are the person's.
 
 ## Ask the person first
 

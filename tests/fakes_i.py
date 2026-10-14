@@ -16,7 +16,7 @@ import pytest
 from PIL import Image, ImageChops
 
 import macos_harness.overlay as overlay_module
-from macos_harness import liveview, presence, statusitem
+from macos_harness import liveview, panel, presence
 from macos_harness.model import WindowRef
 from macos_harness.pointer import outline_points
 
@@ -94,12 +94,12 @@ def listener(pointer_socket: str) -> Iterator[Listener]:
 @pytest.fixture
 def seen(listener: Listener, monkeypatch: pytest.MonkeyPatch) -> Iterator[list]:
     """presence with the pointer on and nothing real behind it: the main thread
-    runs a call at once, and the menu bar item is drawn into the list given."""
+    runs a call at once, and the waiting questions are drawn into the list given."""
     drawn: list[list] = []
     monkeypatch.setattr(presence, "_on_main", lambda fn: fn())
     monkeypatch.setattr(presence, "_paused_until", 0.0)
     monkeypatch.setattr(presence, "OVERLAY", overlay_module.LivePointerOverlay())
-    monkeypatch.setattr(statusitem, "MENU", statusitem.Menu())
-    monkeypatch.setattr(statusitem, "draw", lambda menu: drawn.append(menu.rows()))
+    monkeypatch.setattr(panel, "ASKS", [])
+    monkeypatch.setattr(panel, "draw", lambda: drawn.append(list(panel.ASKS)))
     monkeypatch.setattr(liveview, "_LIVE", None)
     yield drawn

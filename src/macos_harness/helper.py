@@ -12,6 +12,7 @@ import fcntl
 import functools
 import os
 import re
+import select
 import signal
 import socket
 import struct
@@ -123,8 +124,6 @@ class Sessions:
                 if born:
                     self._born[key] = born
             agent.env = dict(env)
-            agent.caller = _agent_process(parents)
-            agent.parents = frozenset((pid, start) for pid, _, start in parents)
         return agent
 
     def gone(self) -> list[AgentSession]:
@@ -341,7 +340,7 @@ def _handle(conn: socket.socket) -> None:
             return
         if not isinstance(message, dict):
             return
-        answer, error_name = answer_for(message, pid, uid)
+        answer, error_name = answer_for(message, pid, uid, _gone(conn))
         try:
             frame = protocol.pack(answer)
         except protocol.FrameTooLarge:
@@ -355,7 +354,18 @@ def _handle(conn: socket.socket) -> None:
             shutdown()
 
 
-def answer_for(message: dict, pid: int, uid: int) -> tuple[dict, str | None]:
+def _gone(conn: socket.socket):
+    """A check, asked before every event of an action, whether the client has gone. It
+    sends nothing after its request, so its socket turns readable only when it closes:
+    the host interrupted the tool (Ctrl+C, Esc) and the action stops right there."""
+    poller = select.poll()
+    poller.register(conn, select.POLLIN | select.POLLHUP)
+    return lambda: bool(poller.poll(0))
+
+
+def answer_for(
+    message: dict, pid: int, uid: int, abandoned=lambda: False
+) -> tuple[dict, str | None]:
     """The reply to one message, and the name of the tool error in it, if any."""
     id, method = message.get("id"), message.get("method")
     if uid != os.getuid():
@@ -390,6 +400,7 @@ def answer_for(message: dict, pid: int, uid: int) -> tuple[dict, str | None]:
                 agent,
                 params.get("cwd") or "/",
                 deadline,
+                abandoned,
             )
         except tools.NeedStdin:
             return protocol.result(id, {"needStdin": True}), None

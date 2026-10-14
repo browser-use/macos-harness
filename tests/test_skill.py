@@ -302,9 +302,7 @@ RULES = {
     "a drag that does nothing": ["run `raise` on the window line", "drag again"],
     "the screenshot": ["open the file on the `screenshot` line"],
     "the menu view": ["if the state shows only a menu", "`--key escape`"],
-    "commands of the person": [
-        "never run `macos-harness approve`, `resume` or `helper`"
-    ],
+    "commands of the person": ["never run `macos-harness approve` or `helper`"],
 }
 
 
@@ -344,7 +342,7 @@ CATALOGUE = """
     menu_action_not_supported menu_click_failed no_keyboard_layout no_text_to_type
     no_windows not_active not_approved not_settable paste_conflict paste_not_read
     paste_write_failed permissions_not_granted permissions_pending request_timed_out
-    security_process stale_element still_interacting stopped_by_user text_not_found
+    security_process stale_element still_interacting text_not_found
     timeout_reached turn_ended user_changed window_not_found_at
 """.split()  # noqa: SIM905 (43 names read better as words than as one per line)
 
@@ -386,9 +384,8 @@ def test_every_error_text_has_its_next_step():
     assert "exit code 2: copy the example line it prints" in FLAT
 
 
-def test_tells_the_model_to_obey_a_stop_and_to_wait_for_an_answer():
+def test_tells_the_model_to_wait_for_an_answer_and_end_a_turn():
     fails = " ".join(section(FAILS).lower().split())
-    assert "`stopped this app session`: stop and tell the person" in fails
     assert "`call this tool again`: run it again, do not end your turn" in fails
     assert "`turn is over`: end your turn" in fails
     assert "tell the person, try no other route" in fails

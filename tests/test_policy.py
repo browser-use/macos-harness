@@ -100,11 +100,13 @@ def test_a_deny_in_the_policy_file_wins_over_the_forbidden_list(files):
 def test_refusal_texts_denied_forbidden_apps(files):
     files("person", '[bundle_ids]\n"com.example.mail" = "deny"\n')
     assert refusal(app("Mail")) == (
-        "Your policy file says macOS Harness may not use the app 'com.example.mail'."
+        "Your policy file says macOS Harness may not use the app 'com.example.mail'. "
+        "Tell the user; only they can change that file."
     )
     files("person", "strict = true\n")
     assert refusal(app("iTerm", "com.googlecode.iterm2")) == (
-        "For safety, macOS Harness may not use the app 'com.googlecode.iterm2'."
+        "For safety, macOS Harness may not use the app 'com.googlecode.iterm2'. "
+        "Tell the user, and do not try to use it another way."
     )
 
 
@@ -133,7 +135,7 @@ def test_an_unknown_access_word_denies(files):
 @pytest.mark.parametrize("layer", ["managed", "person"])
 def test_the_master_switch_disables_everything(files, layer):
     files(layer, "enabled = false\n")
-    assert refusal(app("Notes")) == "Your configuration has macOS Harness switched off."
+    assert refusal(app("Notes")) == errors.disabled().message
 
 
 def test_a_policy_file_that_cannot_be_parsed_refuses_every_app(files):
@@ -180,9 +182,12 @@ def test_11_terminal_apps_are_high_risk():
 def test_a_process_that_gets_events_for_an_app_passes_the_lists_too(files):
     """Checked before an event is posted to a process that is not the app itself."""
     policy.check_recipient("com.apple.appkit.xpc.openAndSavePanelService")
-    with pytest.raises(errors.HarnessError, match="security process: unknown process"):
+    with pytest.raises(
+        errors.HarnessError,
+        match="'unknown process' is a system password or security window",
+    ):
         policy.check_recipient("")  # a process we cannot name gets nothing
-    with pytest.raises(errors.HarnessError, match="system security process"):
+    with pytest.raises(errors.HarnessError, match="system password or security window"):
         policy.check_recipient("com.apple.SecurityAgent")
     files("person", '[bundle_ids]\n"com.example.vault" = "deny"\n')
     with pytest.raises(errors.HarnessError, match="Your policy file says"):
@@ -222,8 +227,8 @@ def test_forbidden_3_system_security_processes_their_own_action(files):
     assert "For safety," in refusal(target)
     files("person", "allow_forbidden_targets = true\n")
     assert refusal(target) == (
-        "macOS Harness error 100: This tool may not act on a system "
-        "security process: com.apple.SecurityAgent"
+        "macOS Harness error 100: 'com.apple.SecurityAgent' is a system password or "
+        "security window, which macOS Harness never touches. Ask the user to answer it."
     )
 
 

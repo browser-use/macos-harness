@@ -28,7 +28,7 @@ class HarnessError(Exception):
         self.code = code
         self.name = name
         self.message = message
-        # the person did it (stop, takeover). Not a failure of the tool.
+        # the person did it (took over, said no). Not a failure of the tool.
         self.cancelled = cancelled
         self.tag = tag  # machine-readable extra, for example "invalid_element_id"
 
@@ -88,39 +88,37 @@ TEXTS: dict[str, tuple[int | None, str, str]] = {
     # the person
     "user_changed": (110, "user_took_over", "The user did something in '{app_path}' since your last read. Call `get_app_state` again before you act on it."),
     "still_interacting": (110, "user_took_over", "The user is working in '{app_path}' right now. Wait 5 seconds, then try again."),
-    "stopped_by_user": (111, "stopped_by_user", "The user stopped this app session. Stop here, and say in your final message that you stopped because they asked and can go on when they want. To go on, ask the user to click Resume in the {product} menu bar item, or run `macos-harness resume` in a new terminal window."),
     "turn_ended": (111, "turn_ended", "The turn is over, so {product} takes no more calls. It takes calls again after the user's next message."),
     "not_active": (112, "no_session", "No session is open for '{app}'. Call `get_app_state` for it first: every other {product} action needs that read."),
     # policy, approval, permissions
-    "forbidden": (120, "app_refused", "For safety, {product} may not use the app '{bundle_id}'."),
-    "denied_by_policy": (120, "app_refused", "Your policy file says {product} may not use the app '{bundle_id}'."),
-    "disabled": (120, "app_refused", "Your configuration has {product} switched off."),
-    "security_process": (None, "", "This tool may not act on a system security process: {bundle_id}"),
-    "not_approved": (120, "not_approved", "The user did not allow {product} to use {display_name}"),
+    "forbidden": (120, "app_refused", "For safety, {product} may not use the app '{bundle_id}'. Tell the user, and do not try to use it another way."),
+    "denied_by_policy": (120, "app_refused", "Your policy file says {product} may not use the app '{bundle_id}'. Tell the user; only they can change that file."),
+    "disabled": (120, "app_refused", "{product} is switched off in its policy file. Tell the user; only they can switch it on."),
+    "security_process": (None, "", "'{bundle_id}' is a system password or security window, which {product} never touches. Ask the user to answer it."),
+    "not_approved": (120, "not_approved", "The user did not allow {product} to use {display_name}. Do not use it in this turn; ask the user if you need it."),
     "approval_pending": (121, "approval_waiting", "The user has not yet answered the question on screen about {product} and \"{display_name}\". Call this tool again now, and do not end your turn."),
     "permissions_pending": (121, "permissions_waiting", "The user is still allowing {app} (the app that started the {product} helper) under {grants} in System Settings. Call this tool again now, and do not end your turn."),
     "permissions_not_granted": (122, "permissions_missing", "{product} cannot work without {grants}. Ask the user to allow {app} (the app that started the {product} helper) under {grants} in System Settings; `macos-harness doctor` lists them."),
     "blocked_url": (123, "page_off_limits", "{product} may not be used on the page that is open in the browser, so this session is over. Stop here and say why in your final message. For {product} the page stays off limits even when the user opens it themselves."),
-    "approval_unavailable": (121, "approval_unavailable", '{product} cannot ask the user to approve "{display_name}" because its on-screen prompt is switched off. Ask the user to approve "{display_name}" in their own terminal (`macos-harness approve`), then call this tool again. The command is refused when you run it.'),
-    "person_only": (120, "not_approved", "`macos-harness {command}` is the user's command. It is refused from an agent that has used an app, and from a terminal where a tool was run. Ask the user to open a new terminal window and run it there."),
-    "approval_not_saved": (100, "approval_not_saved", "{product} could not persist the approval permanently for app '{bundle_id}'. It holds until the helper stops."),
+    "approval_unavailable": (121, "approval_unavailable", "{product} cannot ask the user about \"{display_name}\" because its on-screen prompt is switched off. Ask the user to run `macos-harness approve --app \"{display_name}\"`, then call this tool again."),
+    "approval_not_saved": (100, "approval_not_saved", "{product} could not save the approval of '{bundle_id}' to disk, so it lasts only until the helper stops. Go on; the user can approve it again later."),
     "policy_unreadable": (120, "app_refused", "{product} cannot read its policy file '{path}': {reason}. Ask the user to fix or remove the file, then call this tool again."),
     # apps and windows
-    "invalid_app": (130, "no_such_app", "Invalid app: {identifier}"),
-    "app_not_running": (131, "app_not_running", "No running app matches {identifier}"),
-    "accessibility": (132, "accessibility_failed", "The accessibility call failed: {ax_error_name}"),
+    "invalid_app": (130, "no_such_app", "No app called {identifier} was found on this Mac. Call `list_apps` and use a name or bundle id from it."),
+    "app_not_running": (131, "app_not_running", "{identifier} is not running any more: it quit or crashed. Call `get_app_state` to open it again."),
+    "accessibility": (132, "accessibility_failed", "The app did not answer an accessibility request ({ax_error_name}). Call `get_app_state` again; if it fails again, click by pixel or tell the user."),
     "not_responding": (132, "app_not_responding", "{app_name} is not responding: it did not answer in time. It may be busy or frozen. Wait a few seconds and call get_app_state again. If it still fails, tell the user the app is frozen and stop using it."),
-    "timeout_reached": (None, "", "The app opened no window in time"),
-    "no_windows": (None, "", "The app has no window"),
+    "timeout_reached": (None, "", "The app started but showed no window within 5 seconds. Call `get_app_state` once more; if it fails again, tell the user."),
+    "no_windows": (None, "", "The app has no open window. Open one with its menu or a shortcut, or tell the user."),
     "invalid_process": (None, "", "No usable process id for {identifier}"),
     "no_capturable_window": (None, "", "No window of {identifier} can be captured"),
-    "app_quit": (None, "", "The app has quit"),
-    "failed_to_launch": (None, "", "The app could not be started"),
+    "app_quit": (None, "", "The app quit during the call. Call `get_app_state` to open it again."),
+    "failed_to_launch": (None, "", "macOS could not start the app. Tell the user."),
     "no_window_id": (None, "", "No window could be found for this element"),
     "element_outside_app": (None, "", "This element is drawn by another process and has no parent in the app"),
     # elements
     "stale_element": (None, "", "That element ID is from an older read. " + _RETRY),
-    "invalid_element_id": (None, "", "No element has the ID {index}"),
+    "invalid_element_id": (None, "", "No element has the ID {index} in the last read. Use an ID from the newest `get_app_state` text."),
     # actions
     "key_not_found": (None, "", 'No key is called "{name}"'),
     "key_chord": (None, "", "{case}"),  # one of the three chord texts of keys.py
@@ -153,10 +151,10 @@ TEXTS: dict[str, tuple[int | None, str, str]] = {
     # the helper itself
     "helper_unavailable": (103, "helper_unavailable", "{product} could not start its helper. Run the command again. After 3 failures in a row, tell the user to run `macos-harness doctor`."),
     "helper_stopped": (103, "helper_stopped", "The {product} helper stopped during this call. Call `get_app_state` again before sending more actions."),
-    "request_timed_out": (103, "request_timed_out", "{product} did not answer in time"),
+    "request_timed_out": (103, "request_timed_out", "{product} did not answer within 2 minutes, so the action may or may not have run. Call `get_app_state` to see the app before you try again."),
 }  # fmt: skip
-# The person did it (stop, takeover): reported as such, not as a failure of the tool.
-CANCELLED = {"user_changed", "still_interacting", "stopped_by_user", "turn_ended", "not_approved", "blocked_url"}  # fmt: skip
+# The person did it (took over, said no): reported as such, not as a failure of the tool.
+CANCELLED = {"user_changed", "still_interacting", "turn_ended", "not_approved", "blocked_url"}  # fmt: skip
 ELEMENT_ID = {"stale_element", "invalid_element_id"}  # carry the tag invalid_element_id
 
 
