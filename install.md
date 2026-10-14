@@ -34,8 +34,8 @@ Your own settings in those files stay as they are. To take everything out again,
 macos-harness uninstall --agent claude
 ```
 
-The hooks call the harness by the full path of the install that wrote them, so run
-`uninstall` with the same install you installed from.
+The Pi and OpenCode plugin files name the install that wrote them, so run `uninstall`
+with the same install you installed from.
 
 Going back to an older release: run `macos-harness uninstall --agent all` first, while
 this release is installed. Releases before 0.2.0 have no `uninstall`, and their command
