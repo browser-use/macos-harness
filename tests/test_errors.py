@@ -170,8 +170,9 @@ TEXTS = [
         121,
         "permissions_waiting",
         (
-            "The user is still allowing Terminal under Screen Recording in System "
-            "Settings. Call this tool again now, and do not end your turn."
+            "The user is still allowing Terminal (the app that started the macOS "
+            "Harness helper) under Screen Recording in System Settings. Call this "
+            "tool again now, and do not end your turn."
         ),
     ),
     (
@@ -181,8 +182,9 @@ TEXTS = [
         "permissions_missing",
         (
             "macOS Harness cannot work without Accessibility and Screen Recording. Ask "
-            "the user to allow Terminal under Accessibility and Screen Recording in "
-            "System Settings; `macos-harness doctor` lists them."
+            "the user to allow Terminal (the app that started the macOS Harness "
+            "helper) under Accessibility and Screen Recording in System Settings; "
+            "`macos-harness doctor` lists them."
         ),
     ),
     (
