@@ -129,8 +129,8 @@ def test_action_runs_host_timeout_suspended(world):
     refusal = ask(who, clock=clock)
     assert clock.time() == pytest.approx(1110.0, abs=0.25)
     assert refusal.message == (
-        "Waiting for the user to allow Notes in the macOS Harness panel. Call again "
-        "after they answer."
+        "Waiting for the user to answer the macOS Harness panel about Notes. Call "
+        "this tool again now; do not end your turn."
     )
     assert ask(who).name == "approval_waiting"
     assert len(world.prompts) == 1  # the second call did not ask twice

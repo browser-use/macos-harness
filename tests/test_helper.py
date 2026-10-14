@@ -463,7 +463,9 @@ def test_shutdown_waits_for_the_running_call_and_refuses_new_ones(served):
     assert done.wait(2)
     running.join(2)
     result = replies[0]["result"]  # the running call got its answer: cancelled
-    assert result["exit"] == 1 and "may or may not have run" in result["stderr"]
+    assert result["exit"] == 1 and result["stderr"] == (
+        errors.helper_stopped().message + "\n"  # not "did not answer within 2 minutes"
+    )
     with pytest.raises(OSError), socket.socket(socket.AF_UNIX) as sock:
         sock.connect(protocol.socket_path())  # nobody accepts any more
 

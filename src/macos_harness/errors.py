@@ -96,7 +96,7 @@ TEXTS: dict[str, tuple[int | None, str, str]] = {
     "disabled": (120, "app_refused", "{product} is switched off in its policy file. Tell the user; only they can switch it on."),
     "security_process": (None, "", "'{bundle_id}' is a system password or security window, which {product} never touches. Ask the user to answer it."),
     "not_approved": (120, "not_approved", "The user did not allow {product} to use {display_name}. Do not use it in this turn; ask the user if you need it."),
-    "approval_pending": (121, "approval_waiting", "Waiting for the user to allow {display_name} in the {product} panel. Call again after they answer."),
+    "approval_pending": (121, "approval_waiting", "Waiting for the user to answer the {product} panel about {display_name}. Call this tool again now; do not end your turn."),
     "permissions_pending": (121, "permissions_waiting", "The user is still allowing {app} (the app that started the {product} helper) under {grants} in System Settings. Call this tool again now, and do not end your turn."),
     "permissions_not_granted": (122, "permissions_missing", "{product} cannot work without {grants}. Ask the user to allow {app} (the app that started the {product} helper) under {grants} in System Settings; `macos-harness doctor` lists them."),
     "blocked_url": (123, "page_off_limits", "{product} may not be used on the page that is open in the browser, so this session is over. Stop here and say why in your final message. For {product} the page stays off limits even when the user opens it themselves."),

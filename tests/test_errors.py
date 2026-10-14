@@ -121,8 +121,8 @@ TEXTS = [
         121,
         "approval_waiting",
         (
-            "Waiting for the user to allow Clock in the macOS Harness panel. Call again "
-            "after they answer."
+            "Waiting for the user to answer the macOS Harness panel about Clock. Call "
+            "this tool again now; do not end your turn."
         ),
     ),
     (

@@ -174,7 +174,7 @@ def _session(call: Call, state_read: bool):
     mods.approvals.ensure(
         agent, target, policy, call.deadline, abandoned=call.abandoned
     )
-    mods.permissions.gate(call.deadline)
+    mods.permissions.gate(call.deadline, abandoned=call.abandoned)
     mods.lockscreen.gate(state_read)
     mods.person.gate(agent, target, state_read, abandoned=call.abandoned)
     with mods.helper.app_queue(target):
@@ -915,6 +915,10 @@ def parse(argv: list[str]) -> tuple[str, dict[str, Any]]:
 # --- one call -------------------------------------------------------------------------
 
 
+# What a call says when its `abandoned` turned True: the helper's stop does that too.
+CANCELLED_BY = (errors.user_changed("").name, errors.request_timed_out().name)
+
+
 def execute(
     argv: list[str],
     stdin: str | None,
@@ -943,6 +947,8 @@ def execute(
     except NeedStdin:
         raise
     except errors.HarnessError as error:
+        if error.name in CANCELLED_BY and mods.helper.STATE.stopping:
+            error = errors.helper_stopped()  # the client is still there and reads this
         return _failed(error, as_json, name)
     except Exception as error:  # noqa: BLE001 - every failure becomes a text for the model
         traceback.print_exc()
