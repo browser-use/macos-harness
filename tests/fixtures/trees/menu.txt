@@ -1,0 +1,9 @@
+Window: "Demo", App: Demo.
+1 Format, Secondary Actions: Cancel, Pick
+	2 menu Secondary Actions: Cancel
+		3 Bold, ID: bold:
+		4 (disabled) Paste, ID: paste:
+		5 Font
+			6 menu Secondary Actions: Cancel
+				7 Bigger
+				8 Smaller

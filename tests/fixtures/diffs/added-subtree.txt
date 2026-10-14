@@ -1,0 +1,46 @@
+An added subtree is listed line by line with the next free numbers in depth-first
+order. No line of a parent is printed: the tabs are the only hint of the place. A
+removed subtree is one line of ranges, the first after the header.
+== read
+a window
+.b group
+..c text
+.r list
+..s row
+...t cell
+.u button
+== want
+Window: "Main", App: App.
+0 window
+	1 group
+		2 text
+	3 list
+		4 row
+			5 cell
+	6 button
+
+== read
+a window
+.b group
+..c text
+..n list
+...o row 1
+....p cell
+...q row 2
+.u button
+== want
+<HEADER>
+IDs of elements that went away: 3-5
++		7 list
++			8 row 1
++				9 cell
++			10 row 2
+== read
+a window
+.b group
+..c text
+.u button
+== want
+<HEADER>
+IDs of elements that went away: 7-10
+== end

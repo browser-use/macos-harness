@@ -1,0 +1,48 @@
+A menu opens and closes. The menu view holds only the menu: its title was a child of
+the menu bar and is a root now, so it does not pair and the tree counts from 1. The
+window that comes back pairs with nothing of the menu, counts from 1 as well, and is
+over the line budget. No rule knows about menus.
+== read title=Fixture
+a standard window Fixture
+.b button Press me
+c menu bar
+.d File
+== want
+Window: "Fixture", App: App.
+0 standard window Fixture
+	1 button Press me
+2 menu bar
+	3 File
+
+== read title=Fixture
+d File, Secondary Actions: Cancel, Pick
+.m menu Secondary Actions: Cancel
+..n Reset
+..o Ping
+== want
+Window: "Fixture", App: App.
+1 File, Secondary Actions: Cancel, Pick
+	2 menu Secondary Actions: Cancel
+		3 Reset
+		4 Ping
+
+== read title=Fixture
+a standard window Fixture
+.b button Press me
+c menu bar
+.d File
+== want
+Window: "Fixture", App: App.
+1 standard window Fixture
+	2 button Press me
+3 menu bar
+	4 File
+
+== read title=Fixture
+a standard window Fixture
+.b button Press me
+c menu bar
+.d File
+== want
+Nothing changed in window "Fixture" since the last read.
+== end

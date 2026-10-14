@@ -1,0 +1,33 @@
+Another window of the same app. There is one last state per app, not per window:
+the menu bar pairs, the old window is removed, the new one is added with numbers
+after the largest that stayed, and the header names the new window.
+== read title=One
+a standard window One
+.b button Go
+c menu bar
+.d File
+== want
+Window: "One", App: App.
+0 standard window One
+	1 button Go
+2 menu bar
+	3 File
+
+== read title=Two
+w standard window Two
+.x text Hello
+c menu bar
+.d File
+== want
+<HEADER>
+IDs of elements that went away: 0-1
++4 standard window Two
++	5 text Hello
+== read title=Two renamed
+w standard window Two
+.x text Hello
+c menu bar
+.d File
+== want
+Nothing changed in window "Two renamed" since the last read.
+== end

@@ -1,0 +1,490 @@
+{
+ "title": "Demo",
+ "app": "Demo",
+ "menu_bar": {
+  "role": "AXMenuBar",
+  "actions": {
+   "AXCancel": "cancel"
+  },
+  "children": [
+   {
+    "role": "AXMenuBarItem",
+    "AXTitle": "Apple",
+    "actions": {
+     "AXCancel": "cancel",
+     "AXPress": "press",
+     "AXPick": "pick"
+    }
+   },
+   {
+    "role": "AXMenuBarItem",
+    "AXTitle": "Demo",
+    "AXExpanded": false
+   },
+   {
+    "role": "AXMenuBarItem",
+    "AXTitle": "View",
+    "AXIdentifier": "viewMenu"
+   }
+  ]
+ },
+ "focus": [
+  6
+ ],
+ "window": {
+  "role": "AXWindow",
+  "AXSubrole": "AXStandardWindow",
+  "AXRoleDescription": "standard window",
+  "AXTitle": "Demo",
+  "AXTitleUIElement": {
+   "$path": [
+    20
+   ]
+  },
+  "actions": {
+   "AXRaise": "raise"
+  },
+  "children": [
+   {
+    "role": "AXStaticText",
+    "AXRoleDescription": "text",
+    "AXValue": "Status: idle",
+    "AXIdentifier": "status"
+   },
+   {
+    "role": "AXStaticText",
+    "AXRoleDescription": "text",
+    "AXValue": "Count: 0",
+    "AXIdentifier": "count"
+   },
+   {
+    "role": "AXButton",
+    "AXRoleDescription": "button",
+    "AXTitle": "Press me",
+    "actions": {
+     "AXPress": "press"
+    },
+    "AXIdentifier": "press"
+   },
+   {
+    "role": "AXButton",
+    "AXRoleDescription": "button",
+    "AXTitle": "Unavailable",
+    "actions": {
+     "AXPress": "press"
+    },
+    "AXEnabled": false,
+    "AXIdentifier": "_NS:12"
+   },
+   {
+    "role": "AXButton",
+    "AXRoleDescription": "button",
+    "AXTitle": "Help me",
+    "actions": {
+     "AXPress": "press"
+    },
+    "AXHelp": "Shows a hint",
+    "AXIdentifier": "NSButton7"
+   },
+   {
+    "role": "AXButton",
+    "AXRoleDescription": "button",
+    "AXTitle": "",
+    "actions": {
+     "AXIncrement": "increment",
+     "AXDecrement": "decrement",
+     "AXDelete": "delete",
+     "AXShowMenu": "show menu",
+     "AXCancel": "cancel",
+     "AXPress": "press"
+    },
+    "AXDescription": "Hide Sidebar",
+    "AXHelp": "Hide Sidebar"
+   },
+   {
+    "role": "AXTextField",
+    "AXRoleDescription": "text field",
+    "AXValue": "",
+    "AXPlaceholderValue": "Name",
+    "AXIdentifier": "name",
+    "AXFocused": true,
+    "settable": [
+     "AXValue",
+     "AXFocused"
+    ],
+    "actions": {
+     "AXShowMenu": "show menu",
+     "AXConfirm": "confirm"
+    }
+   },
+   {
+    "role": "AXCheckBox",
+    "AXRoleDescription": "checkbox",
+    "AXTitle": "Enable option",
+    "AXValue": 0,
+    "AXIdentifier": "option",
+    "actions": {
+     "AXPress": "press"
+    }
+   },
+   {
+    "role": "AXCheckBox",
+    "AXSubrole": "AXToggle",
+    "AXRoleDescription": "toggle button",
+    "AXDescription": "Show info",
+    "AXValue": 0,
+    "AXValueDescription": "not selected",
+    "actions": {
+     "AXPress": "press"
+    }
+   },
+   {
+    "role": "AXRadioGroup",
+    "AXRoleDescription": "radio group",
+    "AXIdentifier": "_NS:39",
+    "children": [
+     {
+      "role": "AXRadioButton",
+      "AXSubrole": "AXToggle",
+      "AXRoleDescription": "radio button",
+      "AXTitle": "All",
+      "AXValue": 1,
+      "actions": {
+       "AXPress": "press"
+      }
+     },
+     {
+      "role": "AXRadioButton",
+      "AXSubrole": "AXToggle",
+      "AXRoleDescription": "radio button",
+      "AXTitle": "Some",
+      "AXValue": 0,
+      "actions": {
+       "AXPress": "press"
+      }
+     }
+    ]
+   },
+   {
+    "role": "AXPopUpButton",
+    "AXRoleDescription": "pop up button",
+    "AXValue": "Red",
+    "AXTitleUIElement": {
+     "$path": [
+      11
+     ]
+    },
+    "actions": {
+     "AXShowMenu": "show menu",
+     "AXPress": "press"
+    }
+   },
+   {
+    "role": "AXStaticText",
+    "AXRoleDescription": "text",
+    "AXValue": "Colour:"
+   },
+   {
+    "role": "AXSlider",
+    "AXRoleDescription": "slider",
+    "AXValue": 25.0,
+    "AXIdentifier": "level",
+    "settable": [
+     "AXValue"
+    ],
+    "actions": {
+     "AXIncrement": "increment",
+     "AXDecrement": "decrement"
+    },
+    "children": [
+     {
+      "role": "AXValueIndicator",
+      "AXRoleDescription": "value indicator",
+      "AXValue": 25.0,
+      "settable": [
+       "AXValue"
+      ]
+     }
+    ]
+   },
+   {
+    "role": "AXIncrementor",
+    "AXRoleDescription": "stepper",
+    "AXValue": 3.5,
+    "AXIdentifier": "stepper",
+    "actions": {
+     "AXIncrement": "increment",
+     "AXDecrement": "decrement"
+    },
+    "children": [
+     {
+      "role": "AXButton",
+      "AXSubrole": "AXIncrementArrow",
+      "AXRoleDescription": "increment arrow button",
+      "actions": {
+       "AXPress": "press"
+      }
+     },
+     {
+      "role": "AXValueIndicator",
+      "AXRoleDescription": "value indicator"
+     }
+    ]
+   },
+   {
+    "role": "AXSplitter",
+    "AXRoleDescription": "splitter",
+    "AXValue": 150.0,
+    "AXEnabled": false,
+    "AXExpanded": false,
+    "unlisted": [
+     "AXExpanded"
+    ],
+    "settable": [
+     "AXValue"
+    ]
+   },
+   {
+    "role": "AXScrollArea",
+    "AXRoleDescription": "scroll area",
+    "AXIdentifier": "notes-scroll",
+    "AXVerticalScrollBar": {
+     "$path": [
+      15,
+      1
+     ]
+    },
+    "actions": {
+     "AXScrollLeftByPage": "scroll left by a page",
+     "AXScrollRightByPage": "scroll right by a page",
+     "AXScrollUpByPage": "scroll up by a page",
+     "AXScrollDownByPage": "scroll down by a page"
+    },
+    "children": [
+     {
+      "role": "AXTextArea",
+      "AXRoleDescription": "text entry area",
+      "AXValue": "Line 1\nLine 2",
+      "AXIdentifier": "notes",
+      "settable": [
+       "AXValue"
+      ],
+      "actions": {
+       "AXShowMenu": "show menu"
+      }
+     },
+     {
+      "role": "AXScrollBar",
+      "AXRoleDescription": "scroll bar",
+      "AXValue": 0.25,
+      "settable": [
+       "AXValue"
+      ],
+      "children": [
+       {
+        "role": "AXValueIndicator",
+        "AXRoleDescription": "value indicator",
+        "AXValue": 0.25,
+        "settable": [
+         "AXValue"
+        ]
+       },
+       {
+        "role": "AXButton",
+        "AXSubrole": "AXIncrementPage",
+        "AXRoleDescription": "increment page button",
+        "actions": {
+         "AXPress": "press"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "role": "AXScrollArea",
+    "AXRoleDescription": "scroll area",
+    "actions": {
+     "AXScrollLeftByPage": "scroll left by a page",
+     "AXScrollRightByPage": "scroll right by a page",
+     "AXScrollUpByPage": "scroll up by a page",
+     "AXScrollDownByPage": "scroll down by a page"
+    },
+    "children": [
+     {
+      "role": "AXTable",
+      "AXRoleDescription": "table",
+      "AXIdentifier": "items",
+      "children": [
+       {
+        "role": "AXRow",
+        "AXSubrole": "AXTableRow",
+        "AXRoleDescription": "table row",
+        "AXSelected": false,
+        "settable": [
+         "AXSelected"
+        ],
+        "children": [
+         {
+          "role": "AXCell",
+          "AXRoleDescription": "cell",
+          "AXSelected": false,
+          "children": [
+           {
+            "role": "AXStaticText",
+            "AXRoleDescription": "text",
+            "AXValue": "Item 1"
+           }
+          ],
+          "AXTitleUIElement": {
+           "$path": [
+            16,
+            0,
+            0,
+            0,
+            0
+           ]
+          }
+         },
+         {
+          "role": "AXCell",
+          "AXRoleDescription": "cell",
+          "AXSelected": false,
+          "children": [
+           {
+            "role": "AXStaticText",
+            "AXRoleDescription": "text",
+            "AXValue": "3"
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "role": "AXRow",
+        "AXSubrole": "AXTableRow",
+        "AXRoleDescription": "table row",
+        "AXSelected": true,
+        "settable": [
+         "AXSelected"
+        ],
+        "children": [
+         {
+          "role": "AXCell",
+          "AXRoleDescription": "cell",
+          "AXSelected": true,
+          "children": [
+           {
+            "role": "AXStaticText",
+            "AXRoleDescription": "text",
+            "AXValue": "Item 2"
+           }
+          ]
+         },
+         {
+          "role": "AXCell",
+          "AXRoleDescription": "cell",
+          "AXSelected": false,
+          "children": [
+           {
+            "role": "AXStaticText",
+            "AXRoleDescription": "text",
+            "AXValue": "6"
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "role": "AXColumn",
+        "AXRoleDescription": "column",
+        "AXIdentifier": "item",
+        "AXSelected": false
+       },
+       {
+        "role": "AXGroup",
+        "AXRoleDescription": "group",
+        "children": [
+         {
+          "role": "AXButton",
+          "AXSubrole": "AXSortButton",
+          "AXRoleDescription": "sort button",
+          "actions": {
+           "AXPress": "press"
+          },
+          "AXTitle": "Item"
+         },
+         {
+          "role": "AXButton",
+          "AXSubrole": "AXSortButton",
+          "AXRoleDescription": "sort button",
+          "actions": {
+           "AXPress": "press"
+          },
+          "AXTitle": "Qty"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "role": "AXGroup",
+    "AXRoleDescription": "group",
+    "children": [],
+    "AXDescription": "Pad",
+    "AXIdentifier": "pad"
+   },
+   {
+    "role": "AXGroup",
+    "AXRoleDescription": "group",
+    "children": [
+     {
+      "role": "AXGroup",
+      "AXRoleDescription": "group",
+      "children": [
+       {
+        "role": "AXButton",
+        "AXRoleDescription": "button",
+        "AXTitle": "Deep",
+        "actions": {
+         "AXPress": "press"
+        }
+       }
+      ]
+     }
+    ],
+    "AXSubrole": "AXHostingView"
+   },
+   {
+    "role": "AXButton",
+    "AXSubrole": "AXFullScreenButton",
+    "AXRoleDescription": "full screen button",
+    "AXHelp": "this button also has an action to zoom the window",
+    "actions": {
+     "AXPress": "press",
+     "AXZoomWindow": "zoom the window",
+     "AXShowMenu": "show menu"
+    },
+    "children": [
+     {
+      "role": "AXGroup",
+      "AXRoleDescription": "group",
+      "children": []
+     }
+    ]
+   },
+   {
+    "role": "AXStaticText",
+    "AXRoleDescription": "text",
+    "AXValue": "Demo"
+   },
+   {
+    "role": "AXStaticText",
+    "AXRoleDescription": "text",
+    "AXValue": "2 found"
+   }
+  ]
+ }
+}

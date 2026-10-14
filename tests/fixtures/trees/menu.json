@@ -1,0 +1,160 @@
+{
+ "title": "Demo",
+ "app": "Demo",
+ "focus": [
+  0
+ ],
+ "menu": [
+  1
+ ],
+ "window": {
+  "role": "AXWindow",
+  "AXRoleDescription": "standard window",
+  "AXTitle": "Demo",
+  "children": [
+   {
+    "role": "AXButton",
+    "AXRoleDescription": "button",
+    "AXTitle": "OK",
+    "actions": {
+     "AXPress": "press"
+    },
+    "AXFocused": true
+   }
+  ]
+ },
+ "menu_bar": {
+  "role": "AXMenuBar",
+  "children": [
+   {
+    "role": "AXMenuBarItem",
+    "AXTitle": "Apple"
+   },
+   {
+    "role": "AXMenuBarItem",
+    "AXTitle": "Format",
+    "AXSelected": true,
+    "AXExpanded": false,
+    "settable": [
+     "AXSelected"
+    ],
+    "actions": {
+     "AXCancel": "cancel",
+     "AXPress": "press",
+     "AXPick": "pick"
+    },
+    "children": [
+     {
+      "role": "AXMenu",
+      "AXEnabled": true,
+      "actions": {
+       "AXCancel": "cancel"
+      },
+      "children": [
+       {
+        "role": "AXMenuItem",
+        "AXTitle": "Bold",
+        "AXEnabled": true,
+        "AXSelected": false,
+        "settable": [
+         "AXSelected"
+        ],
+        "actions": {
+         "AXCancel": "cancel",
+         "AXPress": "press",
+         "AXPick": "pick"
+        },
+        "AXIdentifier": "bold:",
+        "AXMenuItemMarkChar": "✓",
+        "AXMenuItemCmdChar": "B"
+       },
+       {
+        "role": "AXMenuItem",
+        "AXTitle": "",
+        "AXEnabled": false,
+        "AXSelected": false,
+        "settable": [
+         "AXSelected"
+        ],
+        "actions": {
+         "AXCancel": "cancel",
+         "AXPress": "press",
+         "AXPick": "pick"
+        }
+       },
+       {
+        "role": "AXMenuItem",
+        "AXTitle": "Paste",
+        "AXEnabled": false,
+        "AXSelected": false,
+        "settable": [
+         "AXSelected"
+        ],
+        "actions": {
+         "AXCancel": "cancel",
+         "AXPress": "press",
+         "AXPick": "pick"
+        },
+        "AXIdentifier": "paste:"
+       },
+       {
+        "role": "AXMenuItem",
+        "AXTitle": "Font",
+        "AXEnabled": true,
+        "AXSelected": false,
+        "settable": [
+         "AXSelected"
+        ],
+        "actions": {
+         "AXCancel": "cancel",
+         "AXPress": "press",
+         "AXPick": "pick"
+        },
+        "children": [
+         {
+          "role": "AXMenu",
+          "AXEnabled": true,
+          "actions": {
+           "AXCancel": "cancel"
+          },
+          "children": [
+           {
+            "role": "AXMenuItem",
+            "AXTitle": "Bigger",
+            "AXEnabled": true,
+            "AXSelected": false,
+            "settable": [
+             "AXSelected"
+            ],
+            "actions": {
+             "AXCancel": "cancel",
+             "AXPress": "press",
+             "AXPick": "pick"
+            }
+           },
+           {
+            "role": "AXMenuItem",
+            "AXTitle": "Smaller",
+            "AXEnabled": true,
+            "AXSelected": false,
+            "settable": [
+             "AXSelected"
+            ],
+            "actions": {
+             "AXCancel": "cancel",
+             "AXPress": "press",
+             "AXPick": "pick"
+            },
+            "AXIdentifier": "_NS:8"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

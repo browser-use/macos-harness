@@ -1,0 +1,22 @@
+The focused element is not in the tree. It gets the number after the tree, a new
+one on every read, and that number shows only in the focus line.
+== read
+a window
+.b button
+@z text field Search
+== want
+Window: "Main", App: App.
+0 window
+	1 button
+
+The focused UI element is 2 text field Search
+== read
+a window
+.b button
+.c text new
+@z text field Search
+== want
+<HEADER>
++	2 text new
+The focused UI element is 3 text field Search
+== end

@@ -1,0 +1,39 @@
+The line budget is the number of lines of the new tree. Second read: both lines
+changed and nothing removed costs 2 of 2, a diff. Third read: one changed line plus
+the removed line costs 2 of 1, the full tree, with the numbers it had. Fourth read:
+the tree is empty, the removed line costs 1 of 0. Fifth read: every line is new and
+nothing was removed, 2 of 2, a diff that counts from 1.
+== read
+a window
+.b text 1
+== want
+Window: "Main", App: App.
+0 window
+	1 text 1
+
+== read
+a window!
+.b text 2
+== want
+<HEADER>
+~0 window!
+~	1 text 2
+== read
+a window!!
+== want
+Window: "Main", App: App.
+0 window!!
+
+== read
+== want
+Window: "Main", App: App.
+
+
+== read
+x window
+.y text
+== want
+<HEADER>
++1 window
++	2 text
+== end

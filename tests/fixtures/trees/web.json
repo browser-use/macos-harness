@@ -1,0 +1,603 @@
+{
+ "title": "Reader",
+ "app": "Reader",
+ "kind": {
+  "http": true
+ },
+ "menu_bar": null,
+ "focus": null,
+ "window": {
+  "role": "AXWindow",
+  "AXRoleDescription": "standard window",
+  "AXTitle": "Reader – 2 found",
+  "AXDocument": "file:///Users/me/Documents/a%20very%20long%20folder%20name/and%20another%20one/that%20goes%20on/and%20on/page.html",
+  "actions": {
+   "AXRaise": "raise"
+  },
+  "children": [
+   {
+    "role": "AXOutline",
+    "AXRoleDescription": "outline",
+    "AXDescription": "sidebar",
+    "children": [
+     {
+      "role": "AXRow",
+      "AXSubrole": "AXOutlineRow",
+      "AXRoleDescription": "table row",
+      "AXSelected": false,
+      "settable": [
+       "AXSelected"
+      ],
+      "children": [
+       {
+        "role": "AXCell",
+        "AXRoleDescription": "cell",
+        "AXSelected": false,
+        "children": [
+         {
+          "role": "AXImage",
+          "AXRoleDescription": "image",
+          "AXDescription": "clock"
+         },
+         {
+          "role": "AXStaticText",
+          "AXRoleDescription": "text",
+          "AXValue": "Recents"
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "role": "AXRow",
+      "AXSubrole": "AXOutlineRow",
+      "AXRoleDescription": "table row",
+      "AXSelected": false,
+      "settable": [
+       "AXSelected",
+       "AXDisclosing"
+      ],
+      "children": [
+       {
+        "role": "AXCell",
+        "AXRoleDescription": "cell",
+        "AXSelected": false,
+        "children": [
+         {
+          "role": "AXStaticText",
+          "AXRoleDescription": "text",
+          "AXValue": " Favourites "
+         }
+        ]
+       }
+      ],
+      "AXDisclosing": true
+     },
+     {
+      "role": "AXRow",
+      "AXSubrole": "AXOutlineRow",
+      "AXRoleDescription": "table row",
+      "AXSelected": true,
+      "settable": [
+       "AXSelected"
+      ],
+      "children": [
+       {
+        "role": "AXCell",
+        "AXRoleDescription": "cell",
+        "AXSelected": false,
+        "children": [
+         {
+          "role": "AXImage",
+          "AXRoleDescription": "image",
+          "AXDescription": "External hard drive"
+         },
+         {
+          "role": "AXStaticText",
+          "AXRoleDescription": "text",
+          "AXValue": "Backup"
+         },
+         {
+          "role": "AXButton",
+          "AXRoleDescription": "button",
+          "AXTitle": "Eject",
+          "actions": {
+           "AXPress": "press"
+          },
+          "AXDescription": "eject"
+         }
+        ]
+       }
+      ],
+      "AXDisclosing": false
+     },
+     {
+      "role": "AXRow",
+      "AXSubrole": "AXOutlineRow",
+      "AXRoleDescription": "table row",
+      "AXSelected": false,
+      "settable": [
+       "AXSelected"
+      ],
+      "children": [
+       {
+        "role": "AXCell",
+        "AXRoleDescription": "cell",
+        "AXSelected": false,
+        "children": [
+         {
+          "role": "AXTextField",
+          "AXRoleDescription": "text field",
+          "AXValue": "Project",
+          "settable": [
+           "AXValue"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "role": "AXWebArea",
+    "AXRoleDescription": "HTML content",
+    "AXURL": "https://www.example.com/docs/page?lang=en#top",
+    "AXLoaded": true,
+    "actions": {
+     "AXShowMenu": "show menu",
+     "AXScrollToVisible": "AXScrollToVisible"
+    },
+    "children": [
+     {
+      "role": "AXHeading",
+      "AXRoleDescription": "heading",
+      "AXTitle": "Serendipity",
+      "AXValue": 1,
+      "actions": {
+       "AXShowMenu": "show menu",
+       "AXScrollToVisible": "AXScrollToVisible"
+      },
+      "children": [
+       {
+        "role": "AXStaticText",
+        "AXRoleDescription": "text",
+        "AXValue": "Serendipity",
+        "actions": {
+         "AXShowMenu": "show menu",
+         "AXScrollToVisible": "AXScrollToVisible"
+        }
+       }
+      ]
+     },
+     {
+      "role": "AXStaticText",
+      "AXRoleDescription": "text",
+      "AXValue": "noun",
+      "actions": {
+       "AXShowMenu": "show menu",
+       "AXScrollToVisible": "AXScrollToVisible"
+      }
+     },
+     {
+      "role": "AXStaticText",
+      "AXRoleDescription": "text",
+      "AXValue": "a happy chance",
+      "actions": {
+       "AXShowMenu": "show menu",
+       "AXScrollToVisible": "AXScrollToVisible"
+      }
+     },
+     {
+      "role": "AXGroup",
+      "AXRoleDescription": "group",
+      "children": [
+       {
+        "role": "AXStaticText",
+        "AXRoleDescription": "text",
+        "AXValue": "For other uses, see ",
+        "actions": {
+         "AXShowMenu": "show menu",
+         "AXScrollToVisible": "AXScrollToVisible"
+        }
+       },
+       {
+        "role": "AXLink",
+        "AXRoleDescription": "link",
+        "AXTitle": "Luck",
+        "AXURL": "x-dictionary:r:'Luck?lang=en",
+        "actions": {
+         "AXPress": "press",
+         "AXShowMenu": "show menu",
+         "AXScrollToVisible": "AXScrollToVisible"
+        },
+        "children": [
+         {
+          "role": "AXStaticText",
+          "AXRoleDescription": "text",
+          "AXValue": "Luck",
+          "actions": {
+           "AXShowMenu": "show menu",
+           "AXScrollToVisible": "AXScrollToVisible"
+          }
+         }
+        ],
+        "AXHelp": "Luck"
+       },
+       {
+        "role": "AXStaticText",
+        "AXRoleDescription": "text",
+        "AXValue": " ",
+        "actions": {
+         "AXShowMenu": "show menu",
+         "AXScrollToVisible": "AXScrollToVisible"
+        }
+       },
+       {
+        "role": "AXStaticText",
+        "AXRoleDescription": "text",
+        "AXValue": ".",
+        "actions": {
+         "AXShowMenu": "show menu",
+         "AXScrollToVisible": "AXScrollToVisible"
+        }
+       },
+       {
+        "role": "AXStaticText",
+        "AXRoleDescription": "text",
+        "AXValue": ".",
+        "actions": {
+         "AXShowMenu": "show menu",
+         "AXScrollToVisible": "AXScrollToVisible"
+        }
+       },
+       {
+        "role": "AXStaticText",
+        "AXRoleDescription": "text",
+        "AXValue": "the end",
+        "actions": {
+         "AXShowMenu": "show menu",
+         "AXScrollToVisible": "AXScrollToVisible"
+        }
+       }
+      ],
+      "actions": {
+       "AXShowMenu": "show menu",
+       "AXScrollToVisible": "AXScrollToVisible"
+      }
+     },
+     {
+      "role": "AXGroup",
+      "AXRoleDescription": "group",
+      "children": [
+       {
+        "role": "AXLink",
+        "AXRoleDescription": "link",
+        "AXTitle": "Portrait",
+        "AXURL": "file:///wiki/File:Portrait.jpg",
+        "actions": {
+         "AXPress": "press",
+         "AXShowMenu": "show menu",
+         "AXScrollToVisible": "AXScrollToVisible"
+        },
+        "children": [
+         {
+          "role": "AXImage",
+          "AXRoleDescription": "image",
+          "AXDescription": "Portrait",
+          "actions": {
+           "AXShowMenu": "show menu",
+           "AXScrollToVisible": "AXScrollToVisible"
+          }
+         }
+        ]
+       },
+       {
+        "role": "AXGroup",
+        "AXRoleDescription": "group",
+        "children": [
+         {
+          "role": "AXLink",
+          "AXRoleDescription": "link",
+          "AXTitle": "",
+          "AXURL": "https://example.org/a",
+          "actions": {
+           "AXPress": "press",
+           "AXShowMenu": "show menu",
+           "AXScrollToVisible": "AXScrollToVisible"
+          },
+          "children": [
+           {
+            "role": "AXStaticText",
+            "AXRoleDescription": "text",
+            "AXValue": "Read",
+            "actions": {
+             "AXShowMenu": "show menu",
+             "AXScrollToVisible": "AXScrollToVisible"
+            }
+           },
+           {
+            "role": "AXStaticText",
+            "AXRoleDescription": "text",
+            "AXValue": "more",
+            "actions": {
+             "AXShowMenu": "show menu",
+             "AXScrollToVisible": "AXScrollToVisible"
+            }
+           }
+          ]
+         },
+         {
+          "role": "AXStaticText",
+          "AXRoleDescription": "text",
+          "AXValue": " by ",
+          "actions": {
+           "AXShowMenu": "show menu",
+           "AXScrollToVisible": "AXScrollToVisible"
+          }
+         },
+         {
+          "role": "AXLink",
+          "AXRoleDescription": "link",
+          "AXTitle": "Someone",
+          "AXURL": "mailto:someone@example.org",
+          "actions": {
+           "AXPress": "press",
+           "AXShowMenu": "show menu",
+           "AXScrollToVisible": "AXScrollToVisible"
+          },
+          "children": []
+         }
+        ],
+        "actions": {
+         "AXShowMenu": "show menu",
+         "AXScrollToVisible": "AXScrollToVisible"
+        }
+       }
+      ],
+      "actions": {
+       "AXShowMenu": "show menu",
+       "AXScrollToVisible": "AXScrollToVisible"
+      }
+     },
+     {
+      "role": "AXGroup",
+      "AXRoleDescription": "group",
+      "children": [
+       {
+        "role": "AXGroup",
+        "AXRoleDescription": "group",
+        "children": [
+         {
+          "role": "AXLink",
+          "AXRoleDescription": "link",
+          "AXTitle": "[1]",
+          "AXURL": "http://www.example.net/cite#note-1",
+          "actions": {
+           "AXPress": "press",
+           "AXShowMenu": "show menu",
+           "AXScrollToVisible": "AXScrollToVisible"
+          },
+          "children": [
+           {
+            "role": "AXStaticText",
+            "AXRoleDescription": "text",
+            "AXValue": "[",
+            "actions": {
+             "AXShowMenu": "show menu",
+             "AXScrollToVisible": "AXScrollToVisible"
+            }
+           },
+           {
+            "role": "AXStaticText",
+            "AXRoleDescription": "text",
+            "AXValue": "1]",
+            "actions": {
+             "AXShowMenu": "show menu",
+             "AXScrollToVisible": "AXScrollToVisible"
+            }
+           }
+          ]
+         }
+        ],
+        "actions": {
+         "AXShowMenu": "show menu",
+         "AXScrollToVisible": "AXScrollToVisible"
+        },
+        "AXSubrole": "AXSuperscriptStyleGroup"
+       }
+      ],
+      "actions": {
+       "AXShowMenu": "show menu",
+       "AXScrollToVisible": "AXScrollToVisible"
+      }
+     },
+     {
+      "role": "AXGroup",
+      "AXRoleDescription": "group",
+      "children": [
+       {
+        "role": "AXStaticText",
+        "AXRoleDescription": "text",
+        "AXValue": "alone",
+        "actions": {
+         "AXShowMenu": "show menu",
+         "AXScrollToVisible": "AXScrollToVisible"
+        }
+       }
+      ],
+      "actions": {
+       "AXShowMenu": "show menu",
+       "AXScrollToVisible": "AXScrollToVisible"
+      },
+      "AXValue": "alone in a list item"
+     },
+     {
+      "role": "AXTable",
+      "AXRoleDescription": "table",
+      "actions": {
+       "AXShowMenu": "show menu",
+       "AXScrollToVisible": "AXScrollToVisible"
+      },
+      "children": [
+       {
+        "role": "AXRow",
+        "AXRoleDescription": "row",
+        "AXSelected": false,
+        "settable": [
+         "AXSelected"
+        ],
+        "actions": {
+         "AXShowMenu": "show menu",
+         "AXScrollToVisible": "AXScrollToVisible"
+        },
+        "children": [
+         {
+          "role": "AXCell",
+          "AXRoleDescription": "cell",
+          "AXSelected": false,
+          "actions": {
+           "AXShowMenu": "show menu",
+           "AXScrollToVisible": "AXScrollToVisible"
+          },
+          "children": [
+           {
+            "role": "AXLink",
+            "AXRoleDescription": "link",
+            "AXTitle": "Abilene paradox",
+            "AXURL": "x-dictionary:r:'Abilene",
+            "actions": {
+             "AXPress": "press",
+             "AXShowMenu": "show menu",
+             "AXScrollToVisible": "AXScrollToVisible"
+            },
+            "children": []
+           },
+           {
+            "role": "AXStaticText",
+            "AXRoleDescription": "text",
+            "AXValue": " · ",
+            "actions": {
+             "AXShowMenu": "show menu",
+             "AXScrollToVisible": "AXScrollToVisible"
+            }
+           },
+           {
+            "role": "AXLink",
+            "AXRoleDescription": "link",
+            "AXTitle": "Adverse effect",
+            "AXURL": "x-dictionary:r:'Adverse",
+            "actions": {
+             "AXPress": "press",
+             "AXShowMenu": "show menu",
+             "AXScrollToVisible": "AXScrollToVisible"
+            },
+            "children": []
+           }
+          ],
+          "settable": [
+           "AXSelected"
+          ],
+          "AXColumnIndexRange": {
+           "$range": [
+            0,
+            2
+           ]
+          },
+          "AXRowIndexRange": {
+           "$range": [
+            0,
+            1
+           ]
+          }
+         }
+        ]
+       },
+       {
+        "role": "AXRow",
+        "AXRoleDescription": "row",
+        "AXSelected": false,
+        "settable": [
+         "AXSelected"
+        ],
+        "actions": {
+         "AXShowMenu": "show menu",
+         "AXScrollToVisible": "AXScrollToVisible"
+        },
+        "children": [
+         {
+          "role": "AXCell",
+          "AXRoleDescription": "cell",
+          "AXSelected": false,
+          "actions": {
+           "AXShowMenu": "show menu",
+           "AXScrollToVisible": "AXScrollToVisible"
+          },
+          "children": [
+           {
+            "role": "AXStaticText",
+            "AXRoleDescription": "text",
+            "AXValue": "Name",
+            "actions": {
+             "AXShowMenu": "show menu",
+             "AXScrollToVisible": "AXScrollToVisible"
+            }
+           }
+          ]
+         },
+         {
+          "role": "AXCell",
+          "AXRoleDescription": "cell",
+          "AXSelected": false,
+          "actions": {
+           "AXShowMenu": "show menu",
+           "AXScrollToVisible": "AXScrollToVisible"
+          },
+          "children": [
+           {
+            "role": "AXStaticText",
+            "AXRoleDescription": "text",
+            "AXValue": "Date",
+            "actions": {
+             "AXShowMenu": "show menu",
+             "AXScrollToVisible": "AXScrollToVisible"
+            }
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "role": "AXColumn",
+        "AXRoleDescription": "column",
+        "actions": {
+         "AXShowMenu": "show menu",
+         "AXScrollToVisible": "AXScrollToVisible"
+        },
+        "children": [
+         {
+          "$dup": [
+           1,
+           7,
+           0,
+           0
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "role": "AXBusyIndicator",
+      "AXRoleDescription": "busy indicator",
+      "actions": {
+       "AXShowMenu": "show menu",
+       "AXScrollToVisible": "AXScrollToVisible"
+      },
+      "AXDescription": "loading"
+     }
+    ]
+   }
+  ]
+ }
+}

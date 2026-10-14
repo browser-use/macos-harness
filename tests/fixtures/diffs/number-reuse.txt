@@ -1,0 +1,50 @@
+A list is replaced, then its rows change again. New numbers start after the largest
+number that stayed (7 in the third read), so 8 and 9 come back on other elements,
+and the gap 1-3 is never filled. Number 8 lands where the old 8 stood: it prints as
+changed. Number 9 is both removed and added.
+== read
+a window
+.b list
+..c row one
+..d row two
+.e button Next
+f menu bar
+.g File
+== want
+Window: "Main", App: App.
+0 window
+	1 list
+		2 row one
+		3 row two
+	4 button Next
+5 menu bar
+	6 File
+
+== read
+a window
+.h list
+..i row three
+..j row four
+.e button Next
+f menu bar
+.g File
+== want
+<HEADER>
+IDs of elements that went away: 1-3
++	7 list
++		8 row three
++		9 row four
+== read
+a window
+.h list
+..k row five
+.e button Next
+.m button Back
+f menu bar
+.g File
+== want
+<HEADER>
+IDs of elements that went away: 9
+~		8 row five
++	9 button Back
+== end

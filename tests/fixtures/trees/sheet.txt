@@ -1,0 +1,4 @@
+Window: "Unknown", App: Demo.
+0 sheet GoToWindow
+	1 button Go
+	2 text Say "hi"

@@ -1,0 +1,26 @@
+{
+ "title": null,
+ "app": "Demo",
+ "menu_bar": null,
+ "focus": null,
+ "window": {
+  "role": "AXSheet",
+  "AXRoleDescription": "sheet",
+  "AXIdentifier": "GoToWindow",
+  "children": [
+   {
+    "role": "AXButton",
+    "AXRoleDescription": "button",
+    "AXTitle": "Go",
+    "actions": {
+     "AXPress": "press"
+    }
+   },
+   {
+    "role": "AXStaticText",
+    "AXRoleDescription": "text",
+    "AXValue": "Say \"hi\""
+   }
+  ]
+ }
+}

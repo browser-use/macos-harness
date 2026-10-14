@@ -18,7 +18,34 @@ DISABLE_ENVS = (
     "ANONYMIZED_TELEMETRY",
     "DO_NOT_TRACK",
 )
-COMMANDS = {"python", "doctor", "apps", "repl", "skill", "see", "state"}
+# The only command names that are ever sent. Anything else is sent as "other".
+COMMANDS = {
+    "list_apps",
+    "get_app_state",
+    "click",
+    "drag",
+    "paste",
+    "perform_secondary_action",
+    "press_key",
+    "scroll",
+    "select_text",
+    "set_value",
+    "type_text",
+    "doctor",
+    "skill",
+    "install",
+    "uninstall",
+    "turn-started",
+    "turn-ended",
+    "stop",
+    "resume",
+    "approve",
+    "telemetry",
+    "help",
+}
+# The person did it. Every other error is a failure of the call.
+CANCELLED = {"stopped_by_user", "user_took_over"}
+MAX_DURATION_MS = 2147483647
 
 
 def _config_dir() -> Path:
@@ -52,10 +79,12 @@ def _save(config: dict) -> None:
         pass
 
 
-def _env_disabled() -> bool:
+def _env_disabled(env: dict | None = None) -> bool:
+    """`env` is the caller's environment: the helper outlives the shell it came from."""
     false = {"0", "false", "no", "off"}
+    env = {**os.environ, **(env or {})}
     for name in DISABLE_ENVS:
-        value = (os.environ.get(name) or "").lower()
+        value = (env.get(name) or "").lower()
         if name == "DO_NOT_TRACK":
             if value in {"1", "true", "yes", "on"}:
                 return True
@@ -77,8 +106,8 @@ def _install_id(config: dict | None = None, *, create: bool = True) -> str | Non
     return install_id
 
 
-def is_enabled() -> bool:
-    return not _env_disabled() and not bool(_load().get("disabled"))
+def is_enabled(env: dict | None = None) -> bool:
+    return not _env_disabled(env) and not bool(_load().get("disabled"))
 
 
 def status() -> dict:
@@ -154,11 +183,22 @@ def _send(payload: dict) -> None:
         process.stdin.close()
 
 
-def capture_cli(command: str | None, success: bool, duration_seconds: float) -> None:
-    """Capture only a known command and coarse runtime metadata—never user data."""
-    if not is_enabled():
+def capture_cli(
+    command: str | None,
+    success: bool,
+    duration_seconds: float,
+    env: dict | None = None,
+    error_name: str | None = None,
+) -> None:
+    """Capture only a known command and coarse runtime metadata—never user data.
+
+    No app, no text, no path, no session and no turn is ever part of the payload.
+    """
+    if not is_enabled(env):
         return
     try:
+        duration_ms = min(max(round(duration_seconds * 1000), 0), MAX_DURATION_MS)
+        status = "cancelled" if error_name in CANCELLED else "failed"
         payload = {
             "api_key": POSTHOG_KEY,
             "distinct_id": _install_id(),
@@ -166,9 +206,10 @@ def capture_cli(command: str | None, success: bool, duration_seconds: float) -> 
             "properties": {
                 "$process_person_profile": False,
                 "$geoip_disable": True,
-                "command": command if command in COMMANDS else "python",
+                "command": command if command in COMMANDS else "other",
                 "success": success,
-                "duration_seconds": round(max(duration_seconds, 0), 2),
+                "status": "ok" if success else status,
+                "duration_seconds": round(duration_ms / 1000, 2),
                 "macos_harness_version": _version(),
                 "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
                 "os": platform.system() or "unknown",
@@ -181,15 +222,10 @@ def capture_cli(command: str | None, success: bool, duration_seconds: float) -> 
         return
 
 
-def run_cli(argv: list[str]) -> int:
+def run_cli(argv: list[str]) -> tuple[int, str, str]:
+    """`macos-harness telemetry [status|enable|disable]`: exit code, stdout, stderr."""
     if not argv or argv == ["status"]:
-        print(json.dumps(status(), indent=2))
-        return 0
-    if argv == ["enable"]:
-        print(json.dumps(set_enabled(True), indent=2))
-        return 0
-    if argv == ["disable"]:
-        print(json.dumps(set_enabled(False), indent=2))
-        return 0
-    print("usage: macos-harness telemetry [status|enable|disable]", file=sys.stderr)
-    return 2
+        return 0, json.dumps(status(), indent=2) + "\n", ""
+    if argv in (["enable"], ["disable"]):
+        return 0, json.dumps(set_enabled(argv == ["enable"]), indent=2) + "\n", ""
+    return 2, "", "usage: macos-harness telemetry [status|enable|disable]\n"

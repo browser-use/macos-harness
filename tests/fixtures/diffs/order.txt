@@ -1,0 +1,31 @@
+The lines of a diff stand in the order of the new tree, not in the order of the
+numbers.
+== read
+a window
+.b text one
+.c group
+..d text two
+.e text three
+== want
+Window: "Main", App: App.
+0 window
+	1 text one
+	2 group
+		3 text two
+	4 text three
+
+== read
+a window
+.n button New
+.b text one!
+.c group
+..o text inner
+..d text two
+.e text three!
+== want
+<HEADER>
++	5 button New
+~	1 text one!
++		6 text inner
+~	4 text three!
+== end
