@@ -1345,6 +1345,11 @@ def test_doctor_skill_install(world):
         "",
     )
     assert world.args("install.install") == ("some-agent", "project", "/work", {})
+    world.install.answers["hook_note"] = "Install it with uv tool install."
+    assert (
+        world.run("install")[1]
+        == "/home/skill/SKILL.md\nInstall it with uv tool install.\n"
+    )
     world.run("uninstall")
     assert world.args("install.uninstall") == (None, "user", "/work", {})
 

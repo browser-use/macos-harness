@@ -16,10 +16,9 @@ MAX_FRAME_BYTES = 8 * 1024 * 1024  # one message on the socket, either way
 CALL_TIMEOUT_S = 120.0  # the client gives up after this long
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 SOCKET_PATH_BYTES = 100  # a longer path does not fit a Unix socket address
-# Sent with every call besides MACOS_HARNESS_*: the two other telemetry switches, the
-# caller's home folders (HOME and every *_HOME), which `install` writes into, and the
-# caller's PATH, which tells `install` whether its hooks find this install by name.
-PASSED_ENV = ("DO_NOT_TRACK", "ANONYMIZED_TELEMETRY", "HOME", "PATH")
+# Sent with every call besides MACOS_HARNESS_*: the two other telemetry switches, and
+# the caller's home folders (HOME and every *_HOME), which `install` writes into.
+PASSED_ENV = ("DO_NOT_TRACK", "ANONYMIZED_TELEMETRY", "HOME")
 
 # Transport errors of the helper: name -> (code, text).
 ERRORS = {

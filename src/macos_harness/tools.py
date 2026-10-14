@@ -530,7 +530,8 @@ def skill(call: Call) -> Result:
 def install(call: Call) -> Result:
     a = call.args
     written = mods.install.install(a.get("agent"), a["scope"], call.cwd, call.agent.env)
-    return Result("\n".join(written), written)
+    note = mods.install.hook_note()
+    return Result("\n".join(written + [note] * bool(note)), written)
 
 
 def uninstall(call: Call) -> Result:

@@ -80,7 +80,7 @@ CONTRACT = {
     "pasteboard": {"restore_saved": None},
     "instructions": {"prefix": None},
     "install": {"install": ["/home/skill/SKILL.md"], "uninstall": None}
-    | {"skill_text": "the skill\n"},
+    | {"skill_text": "the skill\n", "hook_note": None},
     "presence": dict.fromkeys(
         ["pointer_activity", "label", "halo", "live_view", "turn_done"]
     ),

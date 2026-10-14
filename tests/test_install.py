@@ -60,6 +60,8 @@ def home(tmp_path, monkeypatch):
     folder.mkdir()
     monkeypatch.setenv("HOME", str(folder))
     monkeypatch.delenv("CODEX_HOME", raising=False)
+    # No command next to this python: the hooks call it by name (a test sets a path)
+    monkeypatch.setattr(install.sys, "executable", str(tmp_path / "bin/python"))
     return folder
 
 
@@ -208,30 +210,46 @@ def test_a_hook_prints_nothing_and_never_fails(command):
     assert (done.returncode, done.stdout, done.stderr) == (0, b"", b"")
 
 
-def test_hooks_call_this_install_by_its_path_when_path_finds_another(
+def test_hooks_call_this_install_by_its_path_whatever_path_finds(
     home, project, tmp_path, monkeypatch
 ):
-    """A venv that is not on PATH, or an older install first on it: the hooks would
-    run the wrong command, or none. They name this one. Uninstall finds either form."""
-    own, other = tmp_path / "my venv/bin", tmp_path / "older/bin"
-    for folder in (own, other):
-        folder.mkdir(parents=True)
-        (folder / "macos-harness").touch(mode=0o755)
+    """The agent's PATH may be another one than the shell's: a hook by name may run an
+    older install, or nothing. The hooks name this one, by the path it was started
+    with. The bare name of an earlier build gives way; uninstall finds both forms."""
+    own = tmp_path / "my venv/bin"
+    own.mkdir(parents=True)
+    (own / "macos-harness").touch(mode=0o755)
     monkeypatch.setattr(install.sys, "executable", str(own / "python"))
-    env = {"HOME": str(home), "PATH": str(other)}
+    settings = project / ".claude/settings.local.json"
+    settings.parent.mkdir()
+    settings.write_text(json.dumps({"hooks": {"Stop": [group(ENDED)]}}))
+    env = {"HOME": str(home), "PATH": str(own)}  # found by name, too
     install.install(None, "project", str(project), env)
-    hooks = json.loads((project / ".claude/settings.local.json").read_text())["hooks"]
     path = shlex.quote(str(own / "macos-harness"))
-    assert hooks["Stop"] == [group(path + ENDED[len("macos-harness") :])]
+    hooks = json.loads(settings.read_text())["hooks"]
+    assert hooks["Stop"] == [group(path + ENDED[len("macos-harness") :])]  # one hook
     pi = (project / ".pi/extensions/macos-harness.ts").read_text()
     assert f"pi.exec({json.dumps(str(own / 'macos-harness'))}, [word])" in pi
     assert "${" in (project / ".opencode/plugins/macos-harness.js").read_text()
-    install.install(None, "project", str(project), {**env, "PATH": str(own)})
-    hooks = json.loads((project / ".claude/settings.local.json").read_text())["hooks"]
-    assert hooks["Stop"] == [group(ENDED)]  # found by name now: the bare name, once
-    install.install(None, "project", str(project), env)  # the path form again
-    install.uninstall(None, "project", str(project), {**env, "PATH": str(own)})
+    install.uninstall(None, "project", str(project), env)
     assert tree(home, project) == {}
+
+
+def test_a_run_from_uvs_cache_calls_us_by_name_and_says_so(
+    home, project, tmp_path, monkeypatch
+):
+    """uvx: the folder goes with the cache, so a path in a hook would go dead."""
+    run = tmp_path / "cache/archive-v0/abc/bin"
+    run.mkdir(parents=True)
+    (run / "macos-harness").touch(mode=0o755)
+    monkeypatch.setattr(install.sys, "executable", str(run / "python"))
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "cache"))
+    install.install("claude", "project", str(project))
+    hooks = json.loads((project / ".claude/settings.local.json").read_text())["hooks"]
+    assert hooks["Stop"] == [group(ENDED)]
+    assert "install it with `uv tool install macos-harness`" in install.hook_note()
+    monkeypatch.delenv("UV_CACHE_DIR")
+    assert install.hook_note() is None
 
 
 def test_plugins_call_the_same_two_commands():
@@ -282,6 +300,9 @@ def test_a_command_of_theirs_that_ends_like_ours_stays(home, project):
     settings = project / ".claude/settings.local.json"
     settings.parent.mkdir()
     settings.write_text(json.dumps({"hooks": {"Stop": [group(c) for c in theirs]}}))
+    install.install("claude", "project", str(project))
+    hooks = json.loads(settings.read_text())["hooks"]
+    assert hooks["Stop"] == [*(group(c) for c in theirs[:2]), group(ENDED)]
     install.uninstall("claude", "project", str(project))
     hooks = json.loads(settings.read_text())["hooks"]
     assert hooks == {"Stop": [group(c) for c in theirs[:2]]}
@@ -430,6 +451,12 @@ def test_the_way_back_to_an_older_release_takes_our_files_out_first(name):
     # An older release cannot: it has no uninstall, and would leave this skill behind.
     text = " ".join((ROOT / name).read_text().split())
     assert "run `macos-harness uninstall --agent all` first" in text
+
+
+def test_uninstall_is_said_to_run_from_the_install_it_came_from():
+    # A plugin names the full path of the install that wrote it.
+    text = " ".join((ROOT / "install.md").read_text().split())
+    assert "with the same install you installed from" in text
 
 
 def test_install_text_names_every_cli_of_the_table_and_its_folders():

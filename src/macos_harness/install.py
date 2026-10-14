@@ -127,8 +127,8 @@ def _each(agent: str | None, scope: str, cwd: str, env, add: bool) -> list[str]:
     done = {}  # path -> True. Two CLIs can share one skill folder.
     env = os.environ if env is None else env
     where = lambda template: _path(template, cwd, env)
-    mine = str(Path(sys.executable).with_name(NAME))  # this install's command
-    own = _hook_command(mine, env)
+    mine = _mine()
+    own = shlex.quote(mine) if Path(mine).is_file() and not _in_uv_cache(mine) else NAME
     for name in names:
         spec = AGENTS[name]
         skill = where(spec["skill"][scope]) / NAME / "SKILL.md"
@@ -157,15 +157,29 @@ def _path(template: str, cwd: str, env) -> Path:
     return Path(cwd, template.replace("$CODEX_HOME", codex).replace("~", home, 1))
 
 
-def _hook_command(mine: str, env) -> str:
-    """How a hook calls this install: by name when the caller's PATH finds it, else by
-    its full path (an install that is not on PATH, or another one first on it)."""
-    found = shutil.which(NAME, path=env.get("PATH"))
-    if not Path(mine).is_file() or (
-        found and Path(found).resolve() == Path(mine).resolve()
-    ):
-        return NAME
-    return shlex.quote(mine)
+def _mine() -> str:
+    """This install's command, the way it was started: not resolved, so the hooks
+    keep the folder of a uv tool or pipx install, which upgrades keep too. A hook
+    calls it by this path: the agent's PATH may be another one than the shell's."""
+    return str(Path(sys.executable).with_name(NAME))
+
+
+def _in_uv_cache(path: str) -> bool:
+    """A run of uvx or `uv run --with`: its folder goes when uv's cache is cleaned."""
+    cache = os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache", "uv"
+    )
+    return Path(path).is_relative_to(os.environ.get("UV_CACHE_DIR") or cache)
+
+
+def hook_note() -> str | None:
+    """A line for the person when the hooks can only call this tool by name."""
+    if not _in_uv_cache(_mine()):
+        return None
+    return (
+        f"The hooks call `{NAME}` by name: this one runs from uv's cache. For hooks "
+        f"that keep working, install it with `uv tool install {NAME}`."
+    )
 
 
 def _ours(found: object, command: str) -> bool:

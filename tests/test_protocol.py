@@ -94,7 +94,7 @@ def test_envelope_is_json_rpc_with_argv_and_an_absolute_deadline(monkeypatch):
     assert params["env"]["MACOS_HARNESS_DIFF"] == "0"
     assert params["env"]["DO_NOT_TRACK"] == "1"
     # The caller's home folders travel too: `install` writes into them, not into the
-    # helper's. And PATH: it tells `install` how hooks find the command. Nothing else.
+    # helper's. Nothing else does.
     monkeypatch.setenv("XDG_CONFIG_HOME", "/somewhere")
     sent = protocol.request([], None, os.environ, deadline)["params"]["env"]
     assert (
@@ -103,7 +103,7 @@ def test_envelope_is_json_rpc_with_argv_and_an_absolute_deadline(monkeypatch):
     assert "SECRET_TOKEN" not in sent
     assert all(
         n.startswith("MACOS_HARNESS_")
-        or n in ("DO_NOT_TRACK", "HOME", "PATH")
+        or n in ("DO_NOT_TRACK", "HOME")
         or n.endswith("_HOME")
         for n in sent
     )
