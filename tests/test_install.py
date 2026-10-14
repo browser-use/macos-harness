@@ -411,6 +411,13 @@ def test_commands_in_the_texts_for_the_person_parse(name):
             assert argv[0] in ("helper", "--version") or tools.parse(argv)[0], line
 
 
+@pytest.mark.parametrize("name", ["install.md", "README.md"])
+def test_the_way_back_to_an_older_release_takes_our_files_out_first(name):
+    # An older release cannot: it has no uninstall, and would leave this skill behind.
+    text = " ".join((ROOT / name).read_text().split())
+    assert "run `macos-harness uninstall --agent all` first" in text
+
+
 def test_install_text_names_every_cli_of_the_table_and_its_folders():
     text = (ROOT / "install.md").read_text()
     for agent, spec in install.AGENTS.items():

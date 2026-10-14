@@ -28,7 +28,8 @@ Install or upgrade macOS Harness from https://github.com/browser-use/macos-harne
 ```
 
 That is it. The agent installs the package, gets the skill, checks permissions and
-reads its first app. [Manual setup](install.md) is available too.
+reads its first app. [Manual setup](install.md) is available too. To go back to an
+older release, run `macos-harness uninstall --agent all` first.
 
 ## Eleven tools. Any app.
 

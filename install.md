@@ -34,6 +34,10 @@ Your own settings in those files stay as they are. To take everything out again,
 macos-harness uninstall --agent claude
 ```
 
+Going back to an older release: run `macos-harness uninstall --agent all` first, while
+this release is installed. Releases before 0.2.0 have no `uninstall`, and their command
+does not know the skill or the hooks this one wrote.
+
 Any other agent: put the text that `macos-harness skill` prints into a `SKILL.md` where
 that agent reads skills. Without hooks everything still works. The harness then forgets
 an agent's app sessions when the agent exits or after 15 idle minutes, not at the end of
@@ -45,9 +49,10 @@ each turn.
 macos-harness doctor
 ```
 
-Grant only what `doctor` reports as missing: Accessibility and Screen Recording. macOS
-gives them to the app that starts the harness (your terminal, or the agent's desktop
-app), and `doctor` names that app.
+Every call needs Accessibility and Screen Recording; `doctor` also reports two
+optional grants (sending events, and Input Monitoring for Escape twice). Grant only
+what it reports as missing. macOS gives them to the app that starts the harness (your
+terminal, or the agent's desktop app), and `doctor` names that app.
 
 ## You stay in charge
 
