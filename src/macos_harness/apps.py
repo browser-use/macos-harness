@@ -155,7 +155,7 @@ def panel_owner(candidates: list[AppTarget]) -> AppTarget:
     for target in reversed(candidates):
         if target.pid and _panel_owner_window(target.pid) in FILE_PANELS:
             return target
-    raise errors.invalid_app(PANEL_SERVICE)
+    raise errors.no_file_panel()
 
 
 class _System:
@@ -441,7 +441,7 @@ def running(target: AppTarget) -> AppTarget:
     return replace(target, pid=live[0].pid)
 
 
-def launch(target: AppTarget) -> AppTarget:
+def launch(target: AppTarget, abandoned=lambda: False) -> AppTarget:
     """Open the app in the background and wait for its first window. No settle here."""
     pid = SYSTEM.open(target.path)
     if not pid:
@@ -455,6 +455,8 @@ def launch(target: AppTarget) -> AppTarget:
         except errors.HarnessError:
             if time.monotonic() >= end:
                 raise errors.timeout_reached() from None
+        if abandoned():  # nobody waits for this call any more
+            raise errors.request_timed_out()
         time.sleep(LAUNCH_POLL)
 
 

@@ -512,6 +512,31 @@ def test_a_killed_client_stops_its_running_action_at_the_next_key(served):
     assert len(typed) - at_kill <= 2  # at most the key on its way, then no other
 
 
+def test_a_killed_client_waiting_for_the_person_frees_the_app_within_a_second(served):
+    """Ctrl+C on a call that waits, inside the app's queue, for the person to finish:
+    the next call on that app got in only when the wait ran out (up to 100 s)."""
+    calls, waiting = [], threading.Event()
+
+    def gate(agent, target, state_read, abandoned=lambda: False):
+        calls.append(1)
+        if len(calls) == 2:  # the second gate, in the queue: the person is busy
+            waiting.set()
+            while not abandoned():
+                time.sleep(0.01)
+            raise errors.request_timed_out()
+
+    served.person.answers["gate"] = gate
+    client = subprocess.Popen(
+        [sys.executable, "-c", WAITING_CLIENT, "get_app_state", "Demo"]
+    )
+    assert waiting.wait(10), "the call never reached the person's wait"
+    client.kill()
+    client.wait()
+    began = time.monotonic()
+    with helper.app_queue(TARGET):
+        assert time.monotonic() - began < 1.0
+
+
 def test_a_permission_error_makes_the_helper_exit_after_the_reply(served, monkeypatch):
     stops = []
     monkeypatch.setattr(helper, "shutdown", lambda: stops.append(helper.STATE.running))

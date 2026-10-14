@@ -171,7 +171,9 @@ def _session(call: Call, state_read: bool):
         seen = [app.watching for app in mods.helper.SESSIONS.apps(agent)]
         target = mods.apps.panel_owner([t for t in seen if t is not None])
     policy = mods.policy.decide(agent, target)
-    mods.approvals.ensure(agent, target, policy, call.deadline)
+    mods.approvals.ensure(
+        agent, target, policy, call.deadline, abandoned=call.abandoned
+    )
     mods.permissions.gate(call.deadline)
     mods.lockscreen.gate(state_read)
     mods.person.gate(agent, target, state_read, abandoned=call.abandoned)
@@ -277,7 +279,7 @@ def _read_state(call: Call, app: AppSession, target: AppTarget) -> tuple[str, An
     except errors.HarnessError as error:
         if error.name != errors.app_not_running("").name:
             raise
-        target, launched = mods.apps.launch(target), True
+        target, launched = mods.apps.launch(target, abandoned=call.abandoned), True
     kind = mods.apps.kind(target)
     switched_on = False
     if app.watching != target:  # the first read, or the app came back as a new process
@@ -298,7 +300,9 @@ def _read_state(call: Call, app: AppSession, target: AppTarget) -> tuple[str, An
     if app.needs_settle or fresh or warming:
         app.needs_settle = False  # cleared before the wait: an action may set it again
         poll = FRESH_WINDOW_POLL_S if fresh else None
-        capture = mods.settle.wait(target, kind, read, poll=poll)
+        capture = mods.settle.wait(
+            target, kind, read, poll=poll, abandoned=call.abandoned
+        )
     if capture is None:  # no window at all raises here, after the wait
         capture = read(mods.windows.key_window(target))
     _check_page(app, capture)
@@ -347,7 +351,7 @@ def _act(
         unchecked, settled = app.page_unchecked and mods.policy.watches_urls(), None
         if app.needs_settle and (unchecked or call.name in SETTLE_BEFORE_KEYS):
             app.needs_settle = False
-            settled = mods.settle.wait(target, kind, read)
+            settled = mods.settle.wait(target, kind, read, abandoned=call.abandoned)
         if unchecked:
             _check_page(app, settled or read(mods.windows.key_window(target)))
         where = []

@@ -896,7 +896,7 @@ def test_read_after_an_action_clears_the_flag_before_the_settle_starts(active):
     seen = []
     settled = fakes_a.capture("button Settled")
 
-    def wait(target, kind, read, poll=None):
+    def wait(target, kind, read, poll=None, abandoned=None):
         seen.append((app.needs_settle, poll))
         return settled
 
@@ -975,7 +975,7 @@ def test_an_app_that_is_not_running_is_launched_and_settled_fast(world):
         < names.index("apps.launch")
         < names.index("tree.enable")
     )
-    assert world.log[names.index("settle.wait")][2] == {"poll": 0.05}
+    assert world.log[names.index("settle.wait")][2]["poll"] == 0.05
 
 
 def test_the_read_that_switched_the_app_on_asks_the_tree_first(world):
@@ -1046,7 +1046,7 @@ def test_running_app_with_no_window_waits_the_settle_time_then_says_so(world):
     assert (code, err) == (1, NO_WINDOW)
     names = world.names()
     assert names.count("settle.wait") == 1 and "tree.read" not in names
-    assert world.log[names.index("settle.wait")][2] == {"poll": 0.05}
+    assert world.log[names.index("settle.wait")][2]["poll"] == 0.05
     assert names[-2:] == [
         "windows.key_window",
         "awake.release",

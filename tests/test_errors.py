@@ -121,8 +121,8 @@ TEXTS = [
         121,
         "approval_waiting",
         (
-            "The user has not yet answered the question on screen about macOS Harness "
-            'and "Clock". Call this tool again now, and do not end your turn.'
+            "Waiting for the user to allow Clock in the macOS Harness panel. Call again "
+            "after they answer."
         ),
     ),
     (
@@ -132,8 +132,8 @@ TEXTS = [
         "approval_unavailable",
         (
             'macOS Harness cannot ask the user about "Clock" because its on-screen '
-            'prompt is switched off. Ask the user to run `macos-harness approve --app "Clock"`, '
-            "then call this tool again."
+            'panel is switched off. Ask the user to approve "Clock" in their own '
+            "terminal, then call this tool again."
         ),
     ),
     (
@@ -145,6 +145,16 @@ TEXTS = [
             "macOS Harness could not save the approval of 'com.apple.clock' to disk, "
             "so it lasts only until the helper stops. Go on; the user can approve it "
             "again later."
+        ),
+    ),
+    (
+        "no_file_panel",
+        (),
+        130,
+        "no_such_app",
+        (
+            "No app you have read shows an open or save panel now. Call "
+            "`get_app_state` for the app that opened it, then act on the panel there."
         ),
     ),
     (

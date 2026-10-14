@@ -114,11 +114,12 @@ def test_the_file_panel_service_stands_for_an_app_the_agent_reads(monkeypatch):
     assert apps.panel_owner([notes, numbers]) == numbers  # the newest first
     assert asked == [50]
     shown[50] = None
-    with pytest.raises(errors.HarnessError, match="No app called"):
+    with pytest.raises(errors.HarnessError) as raised:
         apps.panel_owner([notes, numbers])
+    assert raised.value.message == errors.no_file_panel().message  # no "app not found"
     assert 77 not in asked  # unrelated apps are never read
     asked.clear()
-    with pytest.raises(errors.HarnessError, match="No app called"):
+    with pytest.raises(errors.HarnessError, match="open or save panel"):
         apps.panel_owner([AppTarget("/A/Off.app", "dev.off", "Off", None)])
     assert asked == []  # not running: nothing to read
 

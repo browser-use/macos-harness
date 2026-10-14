@@ -122,7 +122,12 @@ def _approved(agent: AgentSession, bundle_id: str, policy: Policy) -> bool:
 
 
 def ensure(
-    agent: AgentSession, target: AppTarget, policy: Policy, deadline: float, clock=time
+    agent: AgentSession,
+    target: AppTarget,
+    policy: Policy,
+    deadline: float,
+    clock=time,
+    abandoned=lambda: False,
 ) -> None:
     """Return when the person has allowed this app. A stored yes returns at once, and
     so does every app when the policy does not ask (the default)."""
@@ -155,4 +160,6 @@ def ensure(
                 raise errors.approval_unavailable(name)
         if clock.time() >= deadline - GIVE_UP_S:
             raise errors.approval_pending(name)
+        if abandoned():  # nobody waits for this call any more
+            raise errors.request_timed_out()
         clock.sleep(POLL_S)
