@@ -106,10 +106,9 @@ def test_while_permissions_pending_model_told_call_again_end(mac):
     refusal = mac.gate()
     assert mac.clock.time() == pytest.approx(1110.0, abs=0.25)
     assert refusal.name == "permissions_waiting" and refusal.code == 121
-    assert refusal.message == (
-        "The user is still granting Accessibility and Screen Recording to macOS "
-        "Harness in System Settings. Call this tool again now, and do not end your "
-        "turn."
+    assert refusal.message == (  # the grant missing and the app System Settings lists
+        "The user is still allowing Terminal under Accessibility in System Settings. "
+        "Call this tool again now, and do not end your turn."
     )
     assert mac.opened == [PANE + "Privacy_Accessibility"]  # shown once, not per poll
     assert mac.requests == [("accessibility", {"AXTrustedCheckOptionPrompt": True})]
@@ -127,7 +126,11 @@ def test_permission_window_has_pending_timeout_skip_path_abandon(mac):
     mac.granted["accessibility"] = False
     mac.after(2.0, lambda: setattr(mac, "settings_running", False))
     refusal = mac.gate()
-    assert refusal.message == "macOS Harness lacks the macOS permissions it needs"
+    assert refusal.message == (
+        "macOS Harness cannot work without Accessibility. Ask the user to allow "
+        "Terminal under Accessibility in System Settings; `macos-harness doctor` "
+        "lists them."
+    )
     assert refusal.name == "permissions_missing" and refusal.code == 122
     assert mac.clock.time() == pytest.approx(1005.25, abs=0.25)
 
@@ -150,7 +153,9 @@ def test_system_settings_opened_exact_pane_floating_helper_beside(mac):
     }
     mac.granted.update(accessibility=False, screen_recording=False)
     mac.after(2.0, lambda: mac.granted.update(accessibility=True))
-    assert mac.gate().name == "permissions_waiting"
+    assert (
+        "allowing Terminal under Screen Recording in" in mac.gate().message
+    )  # only it
     assert mac.opened == [
         PANE + "Privacy_Accessibility",
         PANE + "Privacy_ScreenCapture",

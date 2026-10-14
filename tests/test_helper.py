@@ -351,10 +351,11 @@ def test_a_call_that_wants_stdin_is_answered_before_it_does_anything(world):
 
 
 def test_a_failed_tool_call_names_its_error(world):
-    world.permissions.answers["gate"] = errors.permissions_pending()
+    pending = errors.permissions_pending("Terminal", "Accessibility")
+    world.permissions.answers["gate"] = pending
     reply, name = answer("get_app_state", "Demo")
     assert name == "permissions_waiting" and reply["result"]["exit"] == 1
-    assert reply["result"]["stderr"] == errors.permissions_pending().message + "\n"
+    assert reply["result"]["stderr"] == pending.message + "\n"
 
 
 def test_each_call_leaves_one_line_in_the_log_that_names_no_app(world, capsys):
@@ -486,7 +487,10 @@ def test_a_permission_error_makes_the_helper_exit_after_the_reply(served, monkey
     monkeypatch.setattr(helper, "shutdown", lambda: stops.append(helper.STATE.running))
     reply = call(message("get_app_state", "Demo"))
     assert reply["result"]["exit"] == 0 and stops == []
-    for error in (errors.permissions_pending(), errors.permissions_not_granted()):
+    for error in (
+        errors.permissions_pending("Terminal", "Accessibility"),
+        errors.permissions_not_granted("Accessibility", "Terminal"),
+    ):
         served.permissions.answers["gate"] = error
         reply = call(message("get_app_state", "Demo"))
         assert reply["result"]["stderr"] == error.message + "\n"  # sent first

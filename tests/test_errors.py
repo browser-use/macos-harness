@@ -166,21 +166,24 @@ TEXTS = [
     ),
     (
         "permissions_pending",
-        (),
+        ("Terminal", "Screen Recording"),
         121,
         "permissions_waiting",
         (
-            "The user is still granting Accessibility and Screen Recording to macOS "
-            "Harness in System Settings. Call this tool again now, and do not end "
-            "your turn."
+            "The user is still allowing Terminal under Screen Recording in System "
+            "Settings. Call this tool again now, and do not end your turn."
         ),
     ),
     (
         "permissions_not_granted",
-        (),
+        ("Accessibility and Screen Recording", "Terminal"),
         122,
         "permissions_missing",
-        "macOS Harness lacks the macOS permissions it needs",
+        (
+            "macOS Harness cannot work without Accessibility and Screen Recording. Ask "
+            "the user to allow Terminal under Accessibility and Screen Recording in "
+            "System Settings; `macos-harness doctor` lists them."
+        ),
     ),
     (
         "blocked_url",

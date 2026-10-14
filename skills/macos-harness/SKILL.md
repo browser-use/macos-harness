@@ -72,7 +72,7 @@ macos-harness drag --app TextEdit --from_x 200 --from_y 300 --to_x 500 --to_y 30
 - `No session is open`, `No element has the ID`, `older read`, `went away`, `No running app`: run `get_app_state`, use the new numbers.
 - `Call this tool again`: run it again, do not end your turn. `stopped this app session`: stop and tell the person.
 - `turn is over`: end your turn; it works after the person's next message.
-- `may not`, `switched off`, `did not allow`, `lacks the`, `Mac is locked`: tell the person, try no other route.
+- `may not`, `switched off`, `did not allow`, `cannot work without`, `Mac is locked`: tell the person, try no other route.
 - `Invalid app`: use a bundle id from `list_apps`.
 - `no window in time`, `has no window`, `could not be started`: no window; read once more, then tell the person.
 - `off screen`: scroll to it and read, or click by pixel. `No window of the app is at`: use pixels of the newest screenshot.

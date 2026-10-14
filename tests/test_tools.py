@@ -697,7 +697,7 @@ def test_action_order(active):
         ("apps", "resolve", errors.invalid_app("Demo"), 1),
         ("policy", "decide", errors.forbidden("com.example.demo"), 2),
         ("approvals", "ensure", errors.not_approved("Demo"), 3),
-        ("permissions", "gate", errors.permissions_pending(), 4),
+        ("permissions", "gate", errors.permissions_pending("Terminal", "X"), 4),
         ("lockscreen", "gate", errors.locked(state_read=True), 5),
         ("person", "gate", errors.stopped_by_user(), 6),
     ],

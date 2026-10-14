@@ -105,10 +105,19 @@ def gate(deadline: float, clock=time) -> None:
         elif _settings_open():
             settings_seen = True
         elif settings_seen:
-            raise errors.permissions_not_granted()
+            raise errors.permissions_not_granted(
+                grants=_names(missing), app=responsible_app()
+            )
         if clock.time() >= deadline - GIVE_UP_S:
-            raise errors.permissions_pending()
+            raise errors.permissions_pending(
+                app=responsible_app(), grants=_names(missing)
+            )
         clock.sleep(POLL_S)
+
+
+def _names(kinds: list[str]) -> str:
+    """The grants as System Settings lists them: "Accessibility and Screen Recording"."""
+    return " and ".join(kind.replace("_", " ").title() for kind in kinds)
 
 
 def responsible_app() -> str:
