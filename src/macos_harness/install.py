@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
+import sys
 from pathlib import Path
 
 from . import errors
@@ -15,10 +17,12 @@ NAME = "macos-harness"
 STARTED = f"{NAME} turn-started >/dev/null 2>&1 || true"
 ENDED = f"{NAME} turn-ended >/dev/null 2>&1 || true"
 
-PI_EXTENSION = f"""\
+
+def pi_extension(command: str = NAME) -> str:
+    return f"""\
 // Tells {NAME} when a turn starts and ends.
 export default function (pi) {{
-  const tell = (word) => pi.exec("{NAME}", [word]).catch(() => {{}});
+  const tell = (word) => pi.exec({json.dumps(command)}, [word]).catch(() => {{}});
   pi.on("agent_start", async () => {{
     await tell("turn-started");
   }});
@@ -28,14 +32,18 @@ export default function (pi) {{
 }}
 """
 
-OPENCODE_PLUGIN = f"""\
+
+def opencode_plugin(command: str = NAME) -> str:
+    word = NAME if command == NAME else "${" + json.dumps(command) + "}"
+    return f"""\
 // Tells {NAME} when a turn ends.
 export const MacosHarness = async ({{ $ }}) => ({{
   event: async ({{ event }}) => {{
-    if (event.type === "session.idle") await $`{NAME} turn-ended`.quiet().nothrow();
+    if (event.type === "session.idle") await $`{word} turn-ended`.quiet().nothrow();
   }},
 }});
 """
+
 
 # skill: the folder that gets macos-harness/SKILL.md, per scope.
 # hooks: a JSON settings file per scope, and the command each of its events runs.
@@ -67,7 +75,7 @@ AGENTS = {
             "project": f".pi/extensions/{NAME}.ts",
             "user": f"~/.pi/agent/extensions/{NAME}.ts",
         },
-        "source": PI_EXTENSION,
+        "source": pi_extension,
     },
     "opencode": {
         "skill": {"project": ".opencode/skills", "user": "~/.config/opencode/skills"},
@@ -75,7 +83,7 @@ AGENTS = {
             "project": f".opencode/plugins/{NAME}.js",
             "user": f"~/.config/opencode/plugins/{NAME}.js",
         },
-        "source": OPENCODE_PLUGIN,
+        "source": opencode_plugin,
     },
 }
 SCOPES = ("project", "user")
@@ -117,19 +125,26 @@ def _each(agent: str | None, scope: str, cwd: str, env, add: bool) -> list[str]:
         agents, scopes = ", ".join(AGENTS), " or ".join(SCOPES)
         raise errors.usage("install", agents=agents, scopes=scopes, example="claude")
     done = {}  # path -> True. Two CLIs can share one skill folder.
-    where = lambda template: _path(template, cwd, os.environ if env is None else env)
+    env = os.environ if env is None else env
+    where = lambda template: _path(template, cwd, env)
+    mine = str(Path(sys.executable).with_name(NAME))  # this install's command
+    own = _hook_command(mine, env)
     for name in names:
         spec = AGENTS[name]
         skill = where(spec["skill"][scope]) / NAME / "SKILL.md"
         changes = [(skill, _file(skill, skill_text() if add else None))]
         if "hooks" in spec:
             hooks = where(spec["hooks"][scope])
-            changes.append((hooks, _hooks(hooks, spec["events"], add)))
+            events = {
+                event: own + c[len(NAME) :] for event, c in spec["events"].items()
+            }
+            changes.append((hooks, _hooks(hooks, events, add)))
         if "plugin" in spec:
             plugin = where(spec["plugin"][scope])
+            source = spec["source"](shlex.split(own)[0])
             # an edited plugin file is the person's: uninstall leaves it
-            if add or _read(plugin) == spec["source"]:
-                text = spec["source"] if add else None
+            if add or _read(plugin) in (spec["source"](), spec["source"](mine)):
+                text = source if add else None
                 changes.append((plugin, _file(plugin, text)))
         done.update({str(path): True for path, changed in changes if add or changed})
     return list(done)
@@ -140,6 +155,26 @@ def _path(template: str, cwd: str, env) -> Path:
     home = env.get("HOME") or str(Path.home())
     codex = env.get("CODEX_HOME") or f"{home}/.codex"
     return Path(cwd, template.replace("$CODEX_HOME", codex).replace("~", home, 1))
+
+
+def _hook_command(mine: str, env) -> str:
+    """How a hook calls this install: by name when the caller's PATH finds it, else by
+    its full path (an install that is not on PATH, or another one first on it)."""
+    found = shutil.which(NAME, path=env.get("PATH"))
+    if not Path(mine).is_file() or (
+        found and Path(found).resolve() == Path(mine).resolve()
+    ):
+        return NAME
+    return shlex.quote(mine)
+
+
+def _ours(found: object, command: str) -> bool:
+    """Our hook command, by name or by the full path of any install of ours."""
+    tail = command[command.index(" turn-") :]
+    if not isinstance(found, str) or not found.endswith(tail):
+        return False
+    head = found[: -len(tail)]
+    return head == NAME or head.endswith((f"/{NAME}", f"/{NAME}'"))
 
 
 def _read(path: Path) -> str | None:
@@ -178,7 +213,9 @@ def _hooks(path: Path, events: dict[str, str], add: bool) -> bool:
         for event, command in events.items():
             groups = []
             for group in hooks.get(event, []):
-                kept = [h for h in group["hooks"] if h.get("command") != command]
+                kept = [
+                    h for h in group["hooks"] if not _ours(h.get("command"), command)
+                ]
                 groups += [{**group, "hooks": kept}] if kept else []
             if add:
                 groups.append({"hooks": [{"type": "command", "command": command}]})

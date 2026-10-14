@@ -191,7 +191,7 @@ def test_hook_commands_are_commands_the_tool_has():
 
 def test_no_hook_on_a_subagent_event():
     # A subagent shares its parent's session: ending there would drop the parent's apps.
-    text = json.dumps(install.AGENTS).lower()
+    text = json.dumps(install.AGENTS, default=lambda source: source()).lower()
     assert "subagent" not in text
 
 
@@ -208,8 +208,34 @@ def test_a_hook_prints_nothing_and_never_fails(command):
     assert (done.returncode, done.stdout, done.stderr) == (0, b"", b"")
 
 
+def test_hooks_call_this_install_by_its_path_when_path_finds_another(
+    home, project, tmp_path, monkeypatch
+):
+    """A venv that is not on PATH, or an older install first on it: the hooks would
+    run the wrong command, or none. They name this one. Uninstall finds either form."""
+    own, other = tmp_path / "my venv/bin", tmp_path / "older/bin"
+    for folder in (own, other):
+        folder.mkdir(parents=True)
+        (folder / "macos-harness").touch(mode=0o755)
+    monkeypatch.setattr(install.sys, "executable", str(own / "python"))
+    env = {"HOME": str(home), "PATH": str(other)}
+    install.install(None, "project", str(project), env)
+    hooks = json.loads((project / ".claude/settings.local.json").read_text())["hooks"]
+    path = shlex.quote(str(own / "macos-harness"))
+    assert hooks["Stop"] == [group(path + ENDED[len("macos-harness") :])]
+    pi = (project / ".pi/extensions/macos-harness.ts").read_text()
+    assert f"pi.exec({json.dumps(str(own / 'macos-harness'))}, [word])" in pi
+    assert "${" in (project / ".opencode/plugins/macos-harness.js").read_text()
+    install.install(None, "project", str(project), {**env, "PATH": str(own)})
+    hooks = json.loads((project / ".claude/settings.local.json").read_text())["hooks"]
+    assert hooks["Stop"] == [group(ENDED)]  # found by name now: the bare name, once
+    install.install(None, "project", str(project), env)  # the path form again
+    install.uninstall(None, "project", str(project), {**env, "PATH": str(own)})
+    assert tree(home, project) == {}
+
+
 def test_plugins_call_the_same_two_commands():
-    pi, opencode = install.PI_EXTENSION, install.OPENCODE_PLUGIN
+    pi, opencode = install.pi_extension(), install.opencode_plugin()
     assert 'pi.on("agent_start"' in pi and 'tell("turn-started")' in pi
     assert 'pi.on("agent_end"' in pi and 'tell("turn-ended")' in pi
     assert 'pi.exec("macos-harness", [word])' in pi
