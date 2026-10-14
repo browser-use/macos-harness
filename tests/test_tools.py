@@ -1074,7 +1074,7 @@ def test_another_window_error_is_not_taken_for_no_window(world):
     code, _, err = world.run("get_app_state", "Demo")
     assert (code, err) == (
         1,
-        "The app did not answer an accessibility request (AXError.attributeUnsupported). Call `get_app_state` again; if it fails again, click by pixel or tell the user.\n",
+        "An accessibility request to the app failed (AXError.attributeUnsupported). Call `get_app_state` again; if it fails again, click by pixel or tell the user.\n",
     )
     assert "settle.wait" not in world.names()
 
@@ -1214,9 +1214,9 @@ def test_turn_ended_lets_go_in_order(active):
     assert active.run("click", "Demo", "0")[0] == 1  # not active any more
 
 
-def test_one_agent_s_turn_end_leaves_the_menu_rows_of_another_agent(active):
-    """Two agents drive apps. The first one's turn ended, and the menu bar lost the
-    other's "Stop Using ..." rows, and the pointer faded."""
+def test_one_agent_s_turn_end_leaves_the_halo_of_another_agent(active):
+    """Two agents drive apps. The first one's turn ended, and the other's pointer and
+    halo faded."""
     active.person.answers["driven"] = [RUNNING]  # someone still drives an app
     active.run("turn-ended")
     assert "presence.turn_done" not in active.names()

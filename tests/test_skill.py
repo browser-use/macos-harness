@@ -337,14 +337,14 @@ SAYS_WHAT_TO_DO = re.compile(
 CATALOGUE = """
     accessibility ambiguous_app ambiguous_refetch app_not_running approval_pending
     blocked_url cannot_click_offscreen cannot_select_text capture_failed
-    denied_by_policy disabled forbidden helper_stopped helper_unavailable invalid_app
+    denied_by_policy disabled forbidden front_not_back helper_stopped helper_unavailable invalid_app
     invalid_element_id invalid_secondary_action key_chord key_not_found locked
     menu_action_not_supported menu_click_failed no_keyboard_layout no_text_to_type
     no_windows not_active not_approved not_settable paste_conflict paste_not_read
     paste_write_failed permissions_not_granted permissions_pending request_timed_out
     security_process stale_element still_interacting text_not_found
     timeout_reached turn_ended user_changed window_not_found_at
-""".split()  # noqa: SIM905 (43 names read better as words than as one per line)
+""".split()  # noqa: SIM905 (44 names read better as words than as one per line)
 
 
 def error_texts() -> dict[str, str]:

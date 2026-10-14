@@ -303,16 +303,14 @@ def test_no_attention_is_skipped_without_the_call_or_the_process(monkeypatch):
     focus.no_attention(4242)
 
 
-def test_front_app_that_does_not_come_back_is_a_timeout(monkeypatch):
+def test_a_front_app_that_does_not_come_back_says_so(monkeypatch):
     r = rig(monkeypatch)
     r.ax.apps[OTHER_PID] = El("AXApplication")
     start = r.clock.now
     enforcer = r.focus.enforcer(r.app.target)
     with pytest.raises(errors.HarnessError) as caught, enforcer.active(None):
         r.front[0] = APP_PID
-    assert caught.value.message.endswith(
-        "The app started but showed no window within 5 seconds. Call `get_app_state` once more; if it fails again, tell the user."
-    )
+    assert caught.value.message == errors.front_not_back().message
     assert 2.0 <= r.clock.now - start < 2.1
 
 

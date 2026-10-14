@@ -174,11 +174,11 @@ def _session(call: Call, state_read: bool):
     mods.approvals.ensure(agent, target, policy, call.deadline)
     mods.permissions.gate(call.deadline)
     mods.lockscreen.gate(state_read)
-    mods.person.gate(agent, target, state_read)
+    mods.person.gate(agent, target, state_read, abandoned=call.abandoned)
     with mods.helper.app_queue(target):
         # The wait for the app's queue may have been long: the person may have taken
         # the app meanwhile, and the client may have given up or gone.
-        mods.person.gate(agent, target, state_read)
+        mods.person.gate(agent, target, state_read, abandoned=call.abandoned)
         _still_wanted(call)
         app = mods.helper.SESSIONS.app(agent, target)
         began = time.monotonic()

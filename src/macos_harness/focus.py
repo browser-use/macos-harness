@@ -103,7 +103,7 @@ def _bring_back(pid: int) -> None:
     deadline = time.monotonic() + RESTORE_WAIT
     while front_pid() != pid:
         if time.monotonic() >= deadline:
-            raise errors.timeout_reached()
+            raise errors.front_not_back()
         time.sleep(POLL)
 
 

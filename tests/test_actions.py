@@ -83,7 +83,7 @@ def test_press_the_app_did_not_answer_is_not_tried_again_as_events(monkeypatch):
     text = message(r.actions.click, r.app, line(button(r)))
     assert (
         text
-        == "The app did not answer an accessibility request (AXError.cannotComplete). Call `get_app_state` again; if it fails again, click by pixel or tell the user."
+        == "An accessibility request to the app failed (AXError.cannotComplete). Call `get_app_state` again; if it fails again, click by pixel or tell the user."
     )
     assert r.events.posted == []
 
@@ -530,7 +530,7 @@ def test_menu_item_the_app_did_not_answer_for(monkeypatch):
     text = message(r.actions.click, r.app, line(item))
     assert (
         text
-        == "The app did not answer an accessibility request (AXError.cannotComplete). Call `get_app_state` again; if it fails again, click by pixel or tell the user."
+        == "An accessibility request to the app failed (AXError.cannotComplete). Call `get_app_state` again; if it fails again, click by pixel or tell the user."
     )
     assert menu.performed == [] and r.windows.menu is None
 

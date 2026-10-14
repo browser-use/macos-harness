@@ -438,9 +438,11 @@ def test_a_garbage_frame_is_dropped(served):
 
 
 def test_shutdown_waits_for_the_running_call_and_refuses_new_ones(served):
+    """`macos-harness helper stop` also ends what runs: the call stops at its next
+    step and says so, then the helper goes."""
     entered, leave, done = threading.Event(), threading.Event(), threading.Event()
 
-    def slow(*args):
+    def slow(*args, **kwargs):
         entered.set()
         leave.wait(5)
 
@@ -460,7 +462,8 @@ def test_shutdown_waits_for_the_running_call_and_refuses_new_ones(served):
     leave.set()
     assert done.wait(2)
     running.join(2)
-    assert replies[0]["result"]["exit"] == 0  # the running call got its answer
+    result = replies[0]["result"]  # the running call got its answer: cancelled
+    assert result["exit"] == 1 and "may or may not have run" in result["stderr"]
     with pytest.raises(OSError), socket.socket(socket.AF_UNIX) as sock:
         sock.connect(protocol.socket_path())  # nobody accepts any more
 

@@ -222,7 +222,7 @@ TEXTS = [
         ("AXError.cannotComplete",),
         132,
         "accessibility_failed",
-        "The app did not answer an accessibility request (AXError.cannotComplete). Call `get_app_state` again; if it fails again, click by pixel or tell the user.",
+        "An accessibility request to the app failed (AXError.cannotComplete). Call `get_app_state` again; if it fails again, click by pixel or tell the user.",
     ),
     (
         "not_responding",
@@ -234,6 +234,14 @@ TEXTS = [
             "busy or frozen. Wait a few seconds and call get_app_state again. If it "
             "still fails, tell the user the app is frozen and stop using it."
         ),
+    ),
+    (
+        "front_not_back",
+        (),
+        100,
+        "server_error",
+        P
+        + "macOS Harness could not put the user's front app back in front. Tell the user.",
     ),
     (
         "timeout_reached",
@@ -560,7 +568,7 @@ def test_accessibility_failures_named():
     ):
         error = errors.accessibility(ax_name)
         assert error.message == (
-            f"The app did not answer an accessibility request ({ax_name}). Call "
+            f"An accessibility request to the app failed ({ax_name}). Call "
             "`get_app_state` again; if it fails again, click by pixel or tell the user."
         )
         assert error.code == 132

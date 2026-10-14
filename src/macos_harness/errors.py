@@ -106,9 +106,10 @@ TEXTS: dict[str, tuple[int | None, str, str]] = {
     # apps and windows
     "invalid_app": (130, "no_such_app", "No app called {identifier} was found on this Mac. Call `list_apps` and use a name or bundle id from it."),
     "app_not_running": (131, "app_not_running", "{identifier} is not running any more: it quit or crashed. Call `get_app_state` to open it again."),
-    "accessibility": (132, "accessibility_failed", "The app did not answer an accessibility request ({ax_error_name}). Call `get_app_state` again; if it fails again, click by pixel or tell the user."),
+    "accessibility": (132, "accessibility_failed", "An accessibility request to the app failed ({ax_error_name}). Call `get_app_state` again; if it fails again, click by pixel or tell the user."),
     "not_responding": (132, "app_not_responding", "{app_name} is not responding: it did not answer in time. It may be busy or frozen. Wait a few seconds and call get_app_state again. If it still fails, tell the user the app is frozen and stop using it."),
     "timeout_reached": (None, "", "The app started but showed no window within 5 seconds. Call `get_app_state` once more; if it fails again, tell the user."),
+    "front_not_back": (None, "", "{product} could not put the user's front app back in front. Tell the user."),
     "no_windows": (None, "", "The app has no open window. Open one with its menu or a shortcut, or tell the user."),
     "invalid_process": (None, "", "No usable process id for {identifier}"),
     "no_capturable_window": (None, "", "No window of {identifier} can be captured"),

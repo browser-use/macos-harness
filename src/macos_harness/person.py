@@ -51,7 +51,13 @@ _switched = -math.inf
 # ------------------------------------------------------------------------------
 
 
-def gate(agent: AgentSession, target: AppTarget, state_read: bool, clock=time) -> None:
+def gate(
+    agent: AgentSession,
+    target: AppTarget,
+    state_read: bool,
+    clock=time,
+    abandoned=lambda: False,
+) -> None:
     """Hold a call back while the person is using the app, or refuse it.
 
     In order: the turn has ended; wait for the person to be quiet (5 s after their
@@ -71,6 +77,8 @@ def gate(agent: AgentSession, target: AppTarget, state_read: bool, clock=time) -
             break
         if now >= until:
             raise errors.still_interacting(path)
+        if abandoned():  # nobody waits for this call any more: let the app's queue go
+            raise errors.request_timed_out()
         clock.sleep(POLL_S)
     if quiet_at is not None and not state_read:
         raise errors.user_changed(path)

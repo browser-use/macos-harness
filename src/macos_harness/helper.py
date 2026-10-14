@@ -357,10 +357,11 @@ def _handle(conn: socket.socket) -> None:
 def _gone(conn: socket.socket):
     """A check, asked before every event of an action, whether the client has gone. It
     sends nothing after its request, so its socket turns readable only when it closes:
-    the host interrupted the tool (Ctrl+C, Esc) and the action stops right there."""
+    the host interrupted the tool (Ctrl+C, Esc) and the action stops right there. So
+    does every action once the helper is told to stop (`macos-harness helper stop`)."""
     poller = select.poll()
     poller.register(conn, select.POLLIN | select.POLLHUP)
-    return lambda: bool(poller.poll(0))
+    return lambda: STATE.stopping or bool(poller.poll(0))
 
 
 def answer_for(

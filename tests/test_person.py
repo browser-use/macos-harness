@@ -110,6 +110,20 @@ def test_while_person_still_active_actions_held_off_debounce(world):
     assert (person.DEBOUNCE_S, person.WAIT_CAP_S, person.POLL_S) == (5.0, 100.0, 0.25)
 
 
+def test_a_call_whose_client_is_gone_stops_waiting_for_the_person(world):
+    """Ctrl+C on a call that waits for the person: it held the app's queue up to 100 s
+    while the person worked in the app."""
+    who = agent()
+    world.call(who)
+    world.event()
+    world.person_keeps_going()
+    gone = lambda: world.clock.time() >= 1002.0
+    with pytest.raises(errors.HarnessError) as refusal:
+        person.gate(who, NOTES, False, clock=world.clock, abandoned=gone)
+    assert refusal.value.name == "request_timed_out"
+    assert world.clock.time() == pytest.approx(1002.0, abs=0.25)
+
+
 def test_a_state_read_also_waits_out_the_debounce_and_also_gives_up(world):
     who = agent()
     world.call(who)

@@ -153,7 +153,7 @@ def test_remove_single_read_fallback_top(system):
         ax.get_many({}, ["AXRole", "AXTitle"])
     assert (
         name_of(failure)
-        == "The app did not answer an accessibility request (AXError.cannotComplete). Call `get_app_state` again; if it fails again, click by pixel or tell the user."
+        == "An accessibility request to the app failed (AXError.cannotComplete). Call `get_app_state` again; if it fails again, click by pixel or tell the user."
     )
     assert len(system.calls) == 1  # no retry name by name
 
