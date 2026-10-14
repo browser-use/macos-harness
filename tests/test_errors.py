@@ -52,7 +52,8 @@ TEXTS = [
         (
             "The user stopped this app session. Stop here, and say in your final "
             "message that you stopped because they asked and can go on when they "
-            "want. macOS Harness works again once the user resumes it."
+            "want. To go on, ask the user to click Resume in the macOS Harness menu "
+            "bar item, or run `macos-harness resume` in a new terminal window."
         ),
     ),
     (

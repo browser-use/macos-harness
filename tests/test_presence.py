@@ -1,6 +1,7 @@
 # ruff: noqa: F811 - a fixture arrives by import and is asked for by its name
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -13,7 +14,7 @@ from fakes_i import (  # noqa: F401 - the last three are fixtures
 )
 
 import macos_harness.overlay as overlay_module
-from macos_harness import presence, statusitem
+from macos_harness import person, presence, protocol, statusitem
 from macos_harness.model import AppTarget
 
 CHESS = AppTarget("/System/Applications/Chess.app", "com.apple.Chess", "Chess", 42)
@@ -216,6 +217,25 @@ def test_the_menu_stops_one_app_or_all_of_them_and_resumes(seen: list) -> None:
     rows["Resume"]()
 
     assert stopped == [CHESS, None]
+    assert resumed == [None]
+
+
+def test_a_stop_kept_on_disk_shows_the_item_with_resume_when_the_helper_starts(
+    seen: list, monkeypatch
+) -> None:
+    """No agent, no call yet: the menu bar item is still there, as the way out."""
+    monkeypatch.setattr(person, "_stops", set())
+    monkeypatch.setattr(person, "_stop_all", False)
+    resumed = []
+    monkeypatch.setattr(person, "resume", lambda target=None: resumed.append(target))
+    record = {"version": protocol.VERSION, "all": True, "apps": []}
+    protocol.state_dir().mkdir(parents=True, exist_ok=True)
+    (protocol.state_dir() / "stops.json").write_text(json.dumps(record), "utf-8")
+    monkeypatch.setattr(person.runloop, "on_main", lambda fn: None)  # no event tap
+    person.start_watch(4242)
+    assert statusitem.MENU.visible(time.time())
+    assert seen[-1] == [("Stopped by You", None), ("Resume", seen[-1][1][1])]
+    seen[-1][1][1]()
     assert resumed == [None]
 
 

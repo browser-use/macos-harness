@@ -114,7 +114,7 @@ def _note_driven(agent: AgentSession, target: AppTarget) -> None:
 def _keep_stops() -> None:
     """Write the stops down: a helper that is started again still holds them. While
     one holds, the menu bar item stays as the way out."""
-    record = {"all": _stop_all, "apps": sorted(_stops)}
+    record = {"version": protocol.VERSION, "all": _stop_all, "apps": sorted(_stops)}
     presence.stopped(_stop_all or bool(_stops))
     try:
         folder = protocol.state_dir()
@@ -128,11 +128,15 @@ def _keep_stops() -> None:
 
 def load_stops() -> None:
     """At helper start: the stops the last helper held. A file that cannot be read
-    stops everything, until the person resumes."""
+    stops everything, until the person resumes. Stops of another version are dropped:
+    installing it was the person's own act (and an older one wrote stops nobody made)."""
     global _stop_all
     try:
         record = json.loads((protocol.state_dir() / "stops.json").read_text("utf-8"))
         everything, paths = bool(record["all"]), [str(path) for path in record["apps"]]
+        if record.get("version") != protocol.VERSION:
+            log.warning("dropped the stops of version %s", record.get("version"))
+            return
     except FileNotFoundError:
         return
     except (OSError, ValueError, KeyError, TypeError):

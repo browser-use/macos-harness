@@ -88,7 +88,7 @@ TEXTS: dict[str, tuple[int | None, str, str]] = {
     # the person
     "user_changed": (110, "user_took_over", "The user did something in '{app_path}' since your last read. Call `get_app_state` again before you act on it."),
     "still_interacting": (110, "user_took_over", "The user is working in '{app_path}' right now. Wait 5 seconds, then try again."),
-    "stopped_by_user": (111, "stopped_by_user", "The user stopped this app session. Stop here, and say in your final message that you stopped because they asked and can go on when they want. {product} works again once the user resumes it."),
+    "stopped_by_user": (111, "stopped_by_user", "The user stopped this app session. Stop here, and say in your final message that you stopped because they asked and can go on when they want. To go on, ask the user to click Resume in the {product} menu bar item, or run `macos-harness resume` in a new terminal window."),
     "turn_ended": (111, "turn_ended", "The turn is over, so {product} takes no more calls. It takes calls again after the user's next message."),
     "not_active": (112, "no_session", "No session is open for '{app}'. Call `get_app_state` for it first: every other {product} action needs that read."),
     # policy, approval, permissions

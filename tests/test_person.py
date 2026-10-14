@@ -560,7 +560,8 @@ def test_stop_user_driven_model_has_no_stop_method(world):
         assert refusal.message == (
             "The user stopped this app session. Stop here, and say in your final "
             "message that you stopped because they asked and can go on when they "
-            "want. macOS Harness works again once the user resumes it."
+            "want. To go on, ask the user to click Resume in the macOS Harness menu "
+            "bar item, or run `macos-harness resume` in a new terminal window."
         )
         assert refusal.cancelled and refusal.code == 111
     assert world.call(who, MAIL) is None
@@ -682,6 +683,25 @@ def test_a_stop_holds_when_the_helper_is_started_again(world, monkeypatch):
     restarted()
     assert person.stopped(NOTES)  # a file that cannot be read stops everything
     person.resume()
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"all": True, "apps": []},
+        {"version": "0.1.9", "all": False, "apps": ["/Applications/Mail.app"]},
+    ],
+)
+def test_a_stop_of_another_version_is_dropped_at_start(world, record, caplog):
+    """A build before the Escape-twice fix wrote {"all": true} that nobody meant, and
+    0.2.0 refused every app with it until a resume. Installing a version is the
+    person's own act: the stops of another one go, and the log says so."""
+    protocol.state_dir().mkdir(parents=True, exist_ok=True)
+    (protocol.state_dir() / "stops.json").write_text(json.dumps(record), "utf-8")
+    person.start_watch(OWN_PID)
+    assert not person.stopped(NOTES) and not person.stopped(MAIL)
+    assert ("stopped", True) not in world.presence.calls  # no menu bar item for it
+    assert f"dropped the stops of version {record.get('version')}" in caplog.text
 
 
 def test_state_read_must_come_before_any_action_turn(world):
