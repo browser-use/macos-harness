@@ -169,12 +169,16 @@ def _hook_command(mine: str, env) -> str:
 
 
 def _ours(found: object, command: str) -> bool:
-    """Our hook command, by name or by the full path of any install of ours."""
+    """Our hook command, by name or by the full path of any install of ours. A command
+    of the person's that only ends like ours (`notify; macos-harness ...`) is theirs."""
     tail = command[command.index(" turn-") :]
     if not isinstance(found, str) or not found.endswith(tail):
         return False
-    head = found[: -len(tail)]
-    return head == NAME or head.endswith((f"/{NAME}", f"/{NAME}'"))
+    try:
+        words = shlex.split(found[: -len(tail)])
+    except ValueError:
+        return False
+    return len(words) == 1 and (words[0] == NAME or words[0].endswith(f"/{NAME}"))
 
 
 def _read(path: Path) -> str | None:

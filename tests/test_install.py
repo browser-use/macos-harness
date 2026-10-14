@@ -273,6 +273,20 @@ def test_hooks_are_added_next_to_the_persons_own_and_taken_out_again(home, proje
     assert json.loads(settings.read_text()) == THEIRS
 
 
+def test_a_command_of_theirs_that_ends_like_ours_stays(home, project):
+    theirs = [
+        "osascript -e 'beep'; /opt/bin/" + ENDED,
+        "cd ~/proj && ./" + ENDED,
+        '"/My Apps/macos-harness" turn-ended >/dev/null 2>&1 || true',  # ours, quoted
+    ]
+    settings = project / ".claude/settings.local.json"
+    settings.parent.mkdir()
+    settings.write_text(json.dumps({"hooks": {"Stop": [group(c) for c in theirs]}}))
+    install.uninstall("claude", "project", str(project))
+    hooks = json.loads(settings.read_text())["hooks"]
+    assert hooks == {"Stop": [group(c) for c in theirs[:2]]}
+
+
 def test_our_command_inside_a_group_of_theirs_is_taken_out_alone(home, project):
     mixed = {
         "hooks": {"Stop": [{"hooks": [group(ENDED)["hooks"][0], {"command": "say"}]}]}
