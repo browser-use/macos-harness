@@ -6,6 +6,7 @@ import contextlib
 import fcntl
 import json
 import os
+import shlex
 import signal
 import socket
 import subprocess
@@ -180,13 +181,63 @@ def test_a_shell_its_host_left_running_gets_no_session_of_its_own():
     table[40] = (1, "/bin/zsh", 1040.0)  # the same shell, now under launchd
     table[55] = (40, "/usr/bin/python3", 1055.0)  # its next command
     orphan = sessions.agent(55, {})
-    assert (orphan.key, orphan.ended) == (first.key, True)
+    assert (orphan.key, orphan.exited) == (first.key, True)
     table[66] = (1, "/bin/sh", 1066.0)  # a launchd job that runs a shell itself
     table[77] = (66, "/usr/bin/python3", 1077.0)
-    assert not sessions.agent(77, {}).ended
+    assert not sessions.agent(77, {}).exited
     del table[40]
     sessions.gone()
     assert (40, 1040.0) not in sessions._shells  # a shell's record goes with it
+
+
+# A client that prints its reply, from a process of its own.
+REPLYING_CLIENT = """
+import json, socket, sys, time
+from macos_harness import protocol
+message = protocol.request(sys.argv[1:], None, {}, time.time() + 120)
+with socket.socket(socket.AF_UNIX) as sock:
+    sock.connect(protocol.socket_path())
+    print(json.dumps(protocol.call(sock, message)["result"]), flush=True)
+"""
+
+
+def test_a_chain_its_dead_host_left_running_is_refused_but_a_launchd_job_is_not(
+    served, tmp_path
+):
+    """The host dies during `get_app_state && sleep && get_app_state`: its shell goes
+    on under launchd, and its next command is refused. A job whose shell launchd
+    started by itself is served."""
+    client = shlex.join(
+        [sys.executable, "-c", REPLYING_CLIENT, "get_app_state", "Demo"]
+    )
+    go = tmp_path / "go"
+    chain = f"{client} && until [ -e {go} ]; do sleep 0.02; done && {client}"
+    spawn = (
+        "import subprocess, sys, time; subprocess.Popen(['/bin/sh', '-c', sys.argv[1]])"
+    )
+    host = subprocess.Popen(
+        [sys.executable, "-c", spawn + "; time.sleep(60)", chain],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert json.loads(host.stdout.readline())["exit"] == 0
+        host.kill()
+        host.wait()
+        go.touch()
+        refused = json.loads(host.stdout.readline())
+        assert refused["stderr"] == errors.agent_exited().message + "\n"
+    finally:
+        host.kill()
+        go.touch()
+    job_go = tmp_path / "job-go"
+    job = f"until [ -e {job_go} ]; do sleep 0.02; done && {client}"
+    starter = subprocess.Popen(
+        [sys.executable, "-c", spawn, job], stdout=subprocess.PIPE, text=True
+    )
+    starter.wait()  # gone before its shell's first command: that shell is launchd's
+    job_go.touch()
+    assert json.loads(starter.stdout.readline())["exit"] == 0
 
 
 def test_the_real_process_table_and_the_real_socket_peer():
@@ -601,9 +652,9 @@ def test_a_call_whose_agent_process_died_stops_although_its_client_lives(served)
     assert keys < 40  # 0.4 s: the helper looks every 0.25 s
 
 
-def test_a_turn_end_stops_the_action_its_agent_left_running(served):
-    """The host said the turn is over (Esc in Codex, or a host that ended its turn and
-    left the command running): typing stops at the next key."""
+def test_a_cancelling_turn_end_stops_the_action_its_agent_left_running(served):
+    """Codex's Interrupt, Pi's agent_end, a session's end: typing stops at the next
+    key."""
     typed, replies = slow_typing(served), []
     session = {"MACOS_HARNESS_SESSION": "cut"}
     assert call(message("get_app_state", "Demo", env=session))["result"]["exit"] == 0
@@ -614,14 +665,33 @@ def test_a_turn_end_stops_the_action_its_agent_left_running(served):
     )
     typing.start()
     deadline = typing_began(typed)
-    ended = threading.Thread(target=lambda: call(message("turn-ended", env=session)))
+    cancel = message("turn-ended", "--cancel", env=session)
+    ended = threading.Thread(target=lambda: call(cancel))
     ended.start()
     assert keys_until_cancelled(typed, deadline) <= 2
     ended.join(2)
     typing.join(2)
     assert not ended.is_alive()  # it let go of the app once the action stopped
     # The host left the command running: its output may still be read.
-    assert replies[0]["result"]["stderr"] == errors.turn_ended().message + "\n"
+    assert replies[0]["result"]["stderr"] == errors.agent_left().message + "\n"
+
+
+def test_claude_code_s_stop_leaves_a_background_agent_s_action_running(served):
+    """Stop comes when the main turn ends, while background agents still type."""
+    typed = slow_typing(served)
+    session = {"MACOS_HARNESS_SESSION": "cut"}
+    assert call(message("get_app_state", "Demo", env=session))["result"]["exit"] == 0
+    text, replies = "x" * 60, []
+    typing = threading.Thread(
+        target=lambda: replies.append(
+            call(message("type_text", "Demo", text, env=session))
+        )
+    )
+    typing.start()
+    typing_began(typed)
+    assert call(message("turn-ended", env=session))["result"]["exit"] == 0
+    typing.join(5)
+    assert typed == list(text) and replies[0]["result"]["exit"] == 0
 
 
 def test_a_killed_client_waiting_for_the_person_frees_the_app_within_a_second(served):

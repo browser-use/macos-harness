@@ -106,6 +106,8 @@ TEXTS: dict[str, tuple[int | None, str, str]] = {
     # apps and windows
     "invalid_app": (130, "no_such_app", "No app called {identifier} was found on this Mac. Call `list_apps` and use a name or bundle id from it."),
     "no_file_panel": (130, "no_such_app", "No app you have read shows an open or save panel now. Call `get_app_state` for the app that opened it, then act on the panel there."),
+    "agent_left": (111, "turn_ended", "Stopped: the agent's turn ended (or its app exited) during this action."),
+    "agent_exited": (111, "agent_exited", "The agent that started this command has exited, so {product} ignores it."),
     "app_not_running": (131, "app_not_running", "{identifier} is not running any more: it quit or crashed. Call `get_app_state` to open it again."),
     "accessibility": (132, "accessibility_failed", "An accessibility request to the app failed ({ax_error_name}). Call `get_app_state` again; if it fails again, click by pixel or tell the user."),
     "not_responding": (132, "app_not_responding", "{app_name} is not responding: it did not answer in time. It may be busy or frozen. Wait a few seconds and call get_app_state again. If it still fails, tell the user the app is frozen and stop using it."),
@@ -156,7 +158,7 @@ TEXTS: dict[str, tuple[int | None, str, str]] = {
     "request_timed_out": (103, "request_timed_out", "{product} did not answer within 2 minutes, so the action may or may not have run. Call `get_app_state` to see the app before you try again."),
 }  # fmt: skip
 # The person did it (took over, said no): reported as such, not as a failure of the tool.
-CANCELLED = {"user_changed", "still_interacting", "turn_ended", "not_approved", "blocked_url"}  # fmt: skip
+CANCELLED = {"user_changed", "still_interacting", "turn_ended", "agent_left", "agent_exited", "not_approved", "blocked_url"}  # fmt: skip
 ELEMENT_ID = {"stale_element", "invalid_element_id"}  # carry the tag invalid_element_id
 
 

@@ -125,9 +125,7 @@ class Sessions:
                     if host and host != born and not self._runs(host):
                         # The host died and left its shell running: the shell's next
                         # command would open a session of its own and act on.
-                        return AgentSession(
-                            f"{host[0]}:{host[1]}", ended=True, signals_turns=True
-                        )
+                        return AgentSession(f"{host[0]}:{host[1]}", exited=True)
                 if born:
                     self._shells.update(dict.fromkeys(shells, born))
                 key = key or (f"{born[0]}:{born[1]}" if born else "no-agent")
@@ -155,7 +153,7 @@ class Sessions:
     def _runs(self, born: tuple[int, float]) -> bool:
         return (self.process(born[0]) or (0, "", None))[2] == born[1]
 
-    def left(self, agent: AgentSession) -> Callable[[], bool]:
+    def host_gone(self, agent: AgentSession) -> Callable[[], bool]:
         """A check that turns True once the agent's process is gone. Some hosts die on
         Ctrl+C and leave their command running, so the socket of its call stays open."""
         born, looked, gone = self._born.get(agent.key), 0.0, False
@@ -431,7 +429,7 @@ def answer_for(
         if not accepted:
             return protocol.error(id, "stopping"), None
         agent = SESSIONS.agent(pid, env)
-        left, started = SESSIONS.left(agent), time.monotonic()
+        host_gone, started = SESSIONS.host_gone(agent), time.monotonic()
         try:
             outcome = tools.execute(
                 params.get("argv") or [],
@@ -439,7 +437,8 @@ def answer_for(
                 agent,
                 params.get("cwd") or "/",
                 deadline,
-                lambda: abandoned() or left(),
+                abandoned,
+                host_gone,
             )
         except tools.NeedStdin:
             return protocol.result(id, {"needStdin": True}), None

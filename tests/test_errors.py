@@ -58,6 +58,20 @@ TEXTS = [
         ),
     ),
     (
+        "agent_left",
+        (),
+        111,
+        "turn_ended",
+        "Stopped: the agent's turn ended (or its app exited) during this action.",
+    ),
+    (
+        "agent_exited",
+        (),
+        111,
+        "agent_exited",
+        "The agent that started this command has exited, so macOS Harness ignores it.",
+    ),
+    (
         "not_active",
         ("Notes",),
         112,
@@ -550,6 +564,8 @@ def test_what_the_person_did_is_not_reported_as_a_failure():
         "user_changed",
         "still_interacting",
         "turn_ended",
+        "agent_left",  # the person interrupted the agent
+        "agent_exited",
         "not_approved",
         "blocked_url",
     }

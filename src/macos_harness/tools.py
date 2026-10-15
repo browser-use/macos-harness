@@ -538,9 +538,10 @@ def turn_started(call: Call) -> Result:
     return Result("")
 
 
-def let_go(agent: AgentSession) -> None:
-    """The agent's turn is over, or the agent is gone: let go of every app it drove."""
-    agent.turns_ended += 1  # an action it left running stops at its next event
+def let_go(agent: AgentSession, cancel: bool = True) -> None:
+    """The agent's turn is over, or the agent is gone: let go of every app it drove.
+    `cancel`: the action it still runs stops at its next event."""
+    agent.cancels += cancel
     mods.person.turn_ended(agent)
     for app in mods.helper.SESSIONS.apps(agent):
         with mods.helper.app_queue(app.target):
@@ -551,7 +552,7 @@ def let_go(agent: AgentSession) -> None:
 
 
 def turn_ended(call: Call) -> Result:
-    let_go(call.agent)
+    let_go(call.agent, call.args["cancel"])
     return Result("")
 
 
@@ -655,6 +656,7 @@ PARAMS = {
     "agent": ("str", "The agent CLI to install the skill for"),
     "scope": ("str", "project or user"),
     "always": ("bool", "Keep the approval after this session"),
+    "cancel": ("bool", "Also stop the action the agent still runs"),
     "tool": ("str", "A tool name"),
     "json": ("bool", "Print the result object as JSON"),
     "help": ("bool", "Show this text"),
@@ -806,7 +808,7 @@ COMMANDS = {
     "install": _tool(install, "agent scope", "agent", defaults={"scope": "user"}),
     "uninstall": _tool(uninstall, "agent scope", "agent", defaults={"scope": "user"}),
     "turn-started": _tool(turn_started),
-    "turn-ended": _tool(turn_ended),
+    "turn-ended": _tool(turn_ended, "cancel", defaults={"cancel": False}),
     "approve": _tool(approve, "app always", "app", defaults={"always": False}),
     "telemetry": _tool(telemetry, bare="action"),
     "help": _tool(show_help, bare="tool"),
@@ -929,14 +931,18 @@ def execute(
     cwd: str,
     deadline: float,
     abandoned: Callable[[], bool] = lambda: False,
+    host_gone: Callable[[], bool] = lambda: False,
 ) -> Outcome:
     """Run one call and say what to print. Raises only NeedStdin. `abandoned` turns
     True once the client has gone: the running action then stops."""
-    as_json, name, turn = "--json" in argv, None, agent.turns_ended
+    as_json, name, cancels = "--json" in argv, None, agent.cancels
+    left = lambda: host_gone() or agent.cancels != cancels
     try:
         name, args = parse(argv)
         as_json = bool(args.pop("json", False))
         tool = _table()[name]
+        if agent.exited:
+            raise errors.agent_exited()
         if args.pop("help", False):
             name, args = "help", {"tool": None if name == "help" else name}
             tool = COMMANDS["help"]
@@ -946,15 +952,15 @@ def execute(
             args.pop(tool.stdin, None)
             if stdin.removesuffix("\n"):  # a heredoc adds one newline: exactly one goes
                 args[tool.stdin] = stdin.removesuffix("\n")
-        cut = lambda: abandoned() or agent.turns_ended != turn
+        cut = lambda: abandoned() or left()
         result = tool.run(Call(name, args, agent, cwd, deadline, cut))
     except NeedStdin:
         raise
     except errors.HarnessError as error:
         if error.name in CANCELLED_BY and mods.helper.STATE.stopping:
             error = errors.helper_stopped()  # the client is still there and reads this
-        elif error.name in CANCELLED_BY and agent.turns_ended != turn:
-            error = errors.turn_ended()
+        elif error.name in CANCELLED_BY and left():
+            error = errors.agent_left()
         return _failed(error, as_json, name)
     except Exception as error:  # noqa: BLE001 - every failure becomes a text for the model
         traceback.print_exc()

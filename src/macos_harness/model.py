@@ -126,7 +126,10 @@ class AgentSession:
     key: str
     ended: bool = False  # a turn-ended signal arrived and no turn-started since
     signals_turns: bool = False  # this host has sent turn-started at least once
-    turns_ended: int = 0  # turn-ended signals so far: a call begun before one stops
+    # Turn ends that also stop the action it still runs (Codex's interrupt, Pi's agent
+    # end, a session's end). Claude Code's Stop is not one: background agents go on.
+    cancels: int = 0
+    exited: bool = False  # its host died and left this command's shell running
     # bundle ids whose instruction file was printed
     instructed: set[str] = field(default_factory=set)
     # app paths the person refused in this turn

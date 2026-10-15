@@ -588,6 +588,22 @@ def test_a_call_after_the_turn_ended_is_refused_before_anyone_is_asked(active):
     assert "approvals.ensure" not in active.names()
 
 
+def test_a_call_cut_short_by_its_host_s_end_says_so(active):
+    """Not "the user did something": the host may have left the command running."""
+    active.person.answers["gate"] = errors.request_timed_out()
+    gone = lambda: True
+    outcome = tools.execute(
+        ["click", "Demo", "0"], None, active.agent, "/", 0, host_gone=gone
+    )
+    assert outcome.stderr == errors.agent_left().message + "\n"
+
+
+def test_every_call_from_a_shell_its_dead_host_left_is_refused(active):
+    active.agent.exited = True
+    for argv in (["list_apps"], ["click", "Demo", "0"], ["turn-ended"]):
+        assert active.run(*argv)[2] == errors.agent_exited().message + "\n"
+
+
 def test_a_call_the_helper_s_stop_cut_short_says_the_helper_stopped(active):
     """Its client is still there and reads the reply: not "the user did something"."""
     active.person.answers["gate"] = errors.user_changed("/Applications/Demo.app")
