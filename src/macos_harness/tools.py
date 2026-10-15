@@ -534,14 +534,20 @@ def uninstall(call: Call) -> Result:
 
 
 def turn_started(call: Call) -> Result:
-    mods.person.turn_started(call.agent)
+    call.agent.signals_turns, call.agent.ended = True, False
     return Result("")
 
 
 def let_go(agent: AgentSession, cancel: bool = True) -> None:
     """The agent's turn is over, or the agent is gone: let go of every app it drove.
-    `cancel`: the action it still runs stops at its next event."""
-    agent.cancels += cancel
+
+    `cancel`: the action it still runs stops at its next event, and a host that says
+    when turns start gets no calls until the next one. Without it (Claude Code's Stop,
+    opencode's idle: background agents go on) the next action needs a new read.
+    """
+    if cancel:
+        agent.cancels += 1
+        agent.ended = agent.signals_turns
     mods.person.turn_ended(agent)
     for app in mods.helper.SESSIONS.apps(agent):
         with mods.helper.app_queue(app.target):

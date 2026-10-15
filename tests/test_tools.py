@@ -14,7 +14,7 @@ import fakes_a
 import pytest
 from fakes_a import RUNNING, SHOT, TARGET, WINDOW
 
-from macos_harness import errors, helper, tools
+from macos_harness import errors, helper, person, tools
 from macos_harness.model import AgentSession, AppKind, AppTarget
 
 ACTION_LINE = "Done. Call `get_app_state` to see the new state of the UI.\n"
@@ -1281,8 +1281,34 @@ def test_turn_ended_with_a_session_that_never_read_switches_nothing_off(world):
 
 
 def test_turn_started(world):
+    world.agent.ended = True
     assert world.run("turn-started") == (0, "", "")
-    assert world.log == [("person.turn_started", (world.agent,), {})]
+    assert (world.agent.signals_turns, world.agent.ended) == (True, False)
+
+
+def test_a_plain_turn_end_lets_go_but_refuses_nothing(active):
+    """Claude Code's Stop and opencode's idle come at every turn end, while background
+    agents of that turn go on: their next read works at once."""
+    active.person.answers["turn_ended"] = person.turn_ended  # the real one
+    active.agent.signals_turns = True  # Claude Code says when its turns start
+    assert active.run("turn-ended") == (0, "", "")
+    code, _, err = active.run("click", "Demo", "0")  # its numbers are of a read let go
+    assert (code, err) == (
+        1,
+        errors.not_active("/Applications/Demo.app").message + "\n",
+    )
+    assert active.run("get_app_state", "Demo")[0] == 0
+    assert active.run("click", "Demo", "0")[0] == 0
+
+
+def test_a_cancelling_turn_end_refuses_calls_until_the_next_turn(active):
+    active.person.answers["turn_ended"] = person.turn_ended
+    assert active.run("turn-started")[0] == 0
+    assert active.run("turn-ended", "--cancel") == (0, "", "")
+    refused = errors.turn_ended().message + "\n"
+    assert active.run("get_app_state", "Demo")[2] == refused
+    assert active.run("turn-started")[0] == 0
+    assert active.run("get_app_state", "Demo")[0] == 0
 
 
 def test_approve(world):

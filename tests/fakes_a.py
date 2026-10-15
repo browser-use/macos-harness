@@ -58,7 +58,6 @@ CONTRACT = {
         [
             "gate",
             "after_state_read",
-            "turn_started",
             "turn_ended",
             "start_watch",
         ]

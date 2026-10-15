@@ -590,9 +590,7 @@ def test_live_tap_drops_our_own_event_and_counts_the_same_event_from_a_stranger(
 
 
 def test_turn_ended_text(world):
-    who = agent()
-    person.turn_started(who)
-    person.turn_ended(who)
+    who = agent(ended=True)  # tools.let_go marks it
     assert world.call(who, state_read=True).message == (
         "The turn is over, so macOS Harness takes no more calls. It takes calls again "
         "after the user's next message."
@@ -600,22 +598,12 @@ def test_turn_ended_text(world):
     assert person.driven() == []  # a refused call does not make the app driven
 
 
-def test_host_tells_helper_turn_ends_calls_fail_until(world):
-    who = agent()
-    person.turn_started(who)
-    assert who.signals_turns and world.call(who) is None
-    person.turn_ended(who)
-    assert who.ended and world.call(who).name == "turn_ended"
-    person.turn_started(who)
-    assert not who.ended and world.call(who) is None
-
-
 def test_turn_ended_without_turn_started_only_resets(world):
     who = agent(denied={NOTES.path})
     world.call(who)
     world.event()
     person.turn_ended(who)
-    assert not who.ended and who.denied == set()
+    assert who.denied == set()
     assert person._quiet_at == person._drivers == {}
     assert person.driven() == []
     assert world.call(who) is None

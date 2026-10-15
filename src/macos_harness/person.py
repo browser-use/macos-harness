@@ -111,14 +111,8 @@ def interrupted(target: AppTarget, since: float) -> bool:
     return _quiet_at.get(target.path, -math.inf) - DEBOUNCE_S >= since
 
 
-def turn_started(agent: AgentSession) -> None:
-    agent.signals_turns, agent.ended = True, False
-
-
 def turn_ended(agent: AgentSession) -> None:
     """Forget what this agent drove: person records, refused apps."""
-    # Only a host that also says when a turn starts can be held until the next one.
-    agent.ended = agent.signals_turns
     agent.denied.clear()
     with _LOCK:
         for path, keys in list(_drivers.items()):
