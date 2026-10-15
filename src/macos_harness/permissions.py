@@ -91,7 +91,7 @@ def _missing() -> list[str]:
     return [kind for kind in REQUIRED if kind not in _seen_granted]
 
 
-def gate(deadline: float, clock=time) -> None:
+def gate(deadline: float, clock=time, abandoned=lambda: False) -> None:
     """Return once the required grants are there. Else show Settings and wait.
 
     Still missing shortly before the client gives up: the pending text, so the model
@@ -112,6 +112,8 @@ def gate(deadline: float, clock=time) -> None:
             raise errors.permissions_pending(
                 app=responsible_app(), grants=_names(missing)
             )
+        if abandoned():  # nobody waits for this call any more
+            raise errors.request_timed_out()
         clock.sleep(POLL_S)
 
 

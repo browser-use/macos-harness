@@ -14,7 +14,7 @@ import fakes_a
 import pytest
 from fakes_a import RUNNING, SHOT, TARGET, WINDOW
 
-from macos_harness import errors, helper, tools
+from macos_harness import errors, helper, person, tools
 from macos_harness.model import AgentSession, AppKind, AppTarget
 
 ACTION_LINE = "Done. Call `get_app_state` to see the new state of the UI.\n"
@@ -27,7 +27,7 @@ GATES = [
     "lockscreen.gate",
     "person.gate",
 ]
-NO_WINDOW = "macOS Harness error 100: The app has no window\n"
+NO_WINDOW = "macOS Harness error 100: The app has no open window. Open one with its menu or a shortcut, or tell the user.\n"
 
 
 @pytest.fixture
@@ -58,7 +58,8 @@ def test_the_eleven_tools_and_nothing_else():
     assert sorted(tools.TOOLS) == sorted(names.split())
     for missing in ("launch_app", "activate", "move", "key_down", "screenshot"):
         assert missing not in tools.TOOLS
-    assert "stop" not in tools.TOOLS  # the person's command, not a tool of the model
+    for gone in ("stop", "resume"):  # the host's own interrupt is the stop button
+        assert gone not in tools.TOOLS and gone not in tools.COMMANDS
 
 
 def test_every_tool_has_a_description_an_example_and_known_parameters():
@@ -93,8 +94,7 @@ def test_descriptions_are_the_tool_texts():
 
 def test_the_other_commands():
     commands = (
-        "doctor skill install uninstall turn-started turn-ended stop resume approve "
-        "telemetry help"
+        "doctor skill install uninstall turn-started turn-ended approve telemetry help"
     )
     assert sorted(tools.COMMANDS) == sorted(commands.split())
 
@@ -561,9 +561,17 @@ def test_an_action_prints_the_fixed_sentence_and_null_as_json(active):
 
 def test_exit_codes_and_the_error_object(world):
     world.apps.answers["resolve"] = errors.invalid_app("Nope")
-    assert world.run("get_app_state", "Nope") == (1, "", "Invalid app: Nope\n")
+    assert world.run("get_app_state", "Nope") == (
+        1,
+        "",
+        "No app called Nope was found on this Mac. Call `list_apps` and use a name or bundle id from it.\n",
+    )
     code, out, err = world.run("get_app_state", "Nope", "--json")
-    expected = {"code": 130, "name": "no_such_app", "message": "Invalid app: Nope"}
+    expected = {
+        "code": 130,
+        "name": "no_such_app",
+        "message": "No app called Nope was found on this Mac. Call `list_apps` and use a name or bundle id from it.",
+    }
     assert (code, err) == (1, "")
     assert json.loads(out) == {"error": {**expected, "cancelled": False}}
     code, out, _ = world.run("get_app_state", "--json")
@@ -574,6 +582,37 @@ def test_exit_codes_and_the_error_object(world):
     )
 
 
+def test_a_call_after_the_turn_ended_is_refused_before_anyone_is_asked(active):
+    active.agent.ended = True
+    assert active.run("click", "Demo", "0")[2] == errors.turn_ended().message + "\n"
+    assert "approvals.ensure" not in active.names()
+
+
+def test_a_call_cut_short_by_its_host_s_end_says_so(active):
+    """Not "the user did something": the host may have left the command running."""
+    active.person.answers["gate"] = errors.request_timed_out()
+    gone = lambda: True
+    outcome = tools.execute(
+        ["click", "Demo", "0"], None, active.agent, "/", 0, host_gone=gone
+    )
+    assert outcome.stderr == errors.agent_left().message + "\n"
+
+
+def test_every_call_from_a_shell_its_dead_host_left_is_refused(active):
+    active.agent.exited = True
+    for argv in (["list_apps"], ["click", "Demo", "0"], ["turn-ended"]):
+        assert active.run(*argv)[2] == errors.agent_exited().message + "\n"
+
+
+def test_a_call_the_helper_s_stop_cut_short_says_the_helper_stopped(active):
+    """Its client is still there and reads the reply: not "the user did something"."""
+    active.person.answers["gate"] = errors.user_changed("/Applications/Demo.app")
+    helper.STATE.stopping = True
+    assert active.run("click", "Demo", "0")[2] == errors.helper_stopped().message + "\n"
+    active.person.answers["gate"] = errors.app_quit()  # what really happened stays
+    assert active.run("click", "Demo", "0")[2] == errors.app_quit().message + "\n"
+
+
 def test_the_error_object_carries_cancelled_and_tag(active):
     active.person.answers["gate"] = errors.user_changed("/Applications/Demo.app")
     error = json.loads(active.run("click", "Demo", "0", "--json")[1])["error"]
@@ -581,7 +620,9 @@ def test_the_error_object_carries_cancelled_and_tag(active):
     active.person.answers["gate"] = None
     error = json.loads(active.run("click", "Demo", "99", "--json")[1])["error"]
     assert error["tag"] == "invalid_element_id"
-    assert error["message"].endswith("100: No element has the ID 99")
+    assert error["message"].endswith(
+        "100: No element has the ID 99 in the last read. Use an ID from the newest `get_app_state` text."
+    )
 
 
 def test_an_unexpected_exception_becomes_a_server_error(active):
@@ -677,16 +718,12 @@ def test_action_order(active):
         "apps.kind",
         "revisions.resolve",
         "presence.pointer_activity",
-        "presence.label",
         "actions.click",
-        "presence.label",
         "presence.pointer_activity",
         "awake.release",
     ]
     assert active.args("person.gate") == (active.agent, TARGET, False)
     assert active.args("lockscreen.gate") == (False,)
-    labels = [args[0] for name, args, _ in active.log if name == "presence.label"]
-    assert labels == ["Clicking in Demo", "Clicked in Demo"]
     states = [a[0] for name, a, _ in active.log if name == "presence.pointer_activity"]
     assert states == ["idle", "loading"]
 
@@ -699,7 +736,7 @@ def test_action_order(active):
         ("approvals", "ensure", errors.not_approved("Demo"), 3),
         ("permissions", "gate", errors.permissions_pending("Terminal", "X"), 4),
         ("lockscreen", "gate", errors.locked(state_read=True), 5),
-        ("person", "gate", errors.stopped_by_user(), 6),
+        ("person", "gate", errors.still_interacting("/Applications/Demo.app"), 6),
     ],
 )
 def test_a_failed_gate_ends_the_call_there(world, module, function, error, reached):
@@ -805,7 +842,10 @@ def test_no_action_starts_after_the_client_gave_up(active):
     "request timed out", the helper did it later, and the model did it again."""
     active.deadline = time.time() + 0.5  # the client is about to give up
     code, _, err = active.run("click", "Demo", "0")
-    assert (code, err) == (1, "macOS Harness did not answer in time\n")
+    assert (code, err) == (
+        1,
+        "macOS Harness did not answer within 2 minutes, so the action may or may not have run. Call `get_app_state` to see the app before you try again.\n",
+    )
     assert "actions.click" not in active.names()
     active.deadline = time.time() + 120
     code, _, err = active.run(
@@ -821,7 +861,10 @@ def test_no_action_starts_after_the_client_gave_up(active):
 def test_no_action_starts_that_would_end_after_the_client_gave_up(active, monkeypatch):
     """The margin was 1 s whatever the action took: a 30 s hold started 2 s before
     the limit ended 28 s after the client printed "request timed out"."""
-    timed_out = (1, "macOS Harness did not answer in time\n")
+    timed_out = (
+        1,
+        "macOS Harness did not answer within 2 minutes, so the action may or may not have run. Call `get_app_state` to see the app before you try again.\n",
+    )
     active.deadline = time.time() + 20
     for call in (
         ["press_key", "Demo", "a", "--duration", "25"],
@@ -884,7 +927,7 @@ def test_read_after_an_action_clears_the_flag_before_the_settle_starts(active):
     seen = []
     settled = fakes_a.capture("button Settled")
 
-    def wait(target, kind, read, poll=None):
+    def wait(target, kind, read, poll=None, abandoned=None):
         seen.append((app.needs_settle, poll))
         return settled
 
@@ -963,7 +1006,7 @@ def test_an_app_that_is_not_running_is_launched_and_settled_fast(world):
         < names.index("apps.launch")
         < names.index("tree.enable")
     )
-    assert world.log[names.index("settle.wait")][2] == {"poll": 0.05}
+    assert world.log[names.index("settle.wait")][2]["poll"] == 0.05
 
 
 def test_the_read_that_switched_the_app_on_asks_the_tree_first(world):
@@ -1024,7 +1067,7 @@ def test_launch_that_shows_no_window_says_timeout(world):
     code, _, err = world.run("get_app_state", "Demo")
     assert (code, err) == (
         1,
-        "macOS Harness error 100: The app opened no window in time\n",
+        "macOS Harness error 100: The app started but showed no window within 5 seconds. Call `get_app_state` once more; if it fails again, tell the user.\n",
     )
 
 
@@ -1034,7 +1077,7 @@ def test_running_app_with_no_window_waits_the_settle_time_then_says_so(world):
     assert (code, err) == (1, NO_WINDOW)
     names = world.names()
     assert names.count("settle.wait") == 1 and "tree.read" not in names
-    assert world.log[names.index("settle.wait")][2] == {"poll": 0.05}
+    assert world.log[names.index("settle.wait")][2]["poll"] == 0.05
     assert names[-2:] == [
         "windows.key_window",
         "awake.release",
@@ -1062,7 +1105,7 @@ def test_another_window_error_is_not_taken_for_no_window(world):
     code, _, err = world.run("get_app_state", "Demo")
     assert (code, err) == (
         1,
-        "The accessibility call failed: AXError.attributeUnsupported\n",
+        "An accessibility request to the app failed (AXError.attributeUnsupported). Call `get_app_state` again; if it fails again, click by pixel or tell the user.\n",
     )
     assert "settle.wait" not in world.names()
 
@@ -1202,9 +1245,9 @@ def test_turn_ended_lets_go_in_order(active):
     assert active.run("click", "Demo", "0")[0] == 1  # not active any more
 
 
-def test_one_agent_s_turn_end_leaves_the_menu_rows_of_another_agent(active):
-    """Two agents drive apps. The first one's turn ended, and the menu bar lost the
-    other's "Stop Using ..." rows, and the pointer faded."""
+def test_one_agent_s_turn_end_leaves_the_halo_of_another_agent(active):
+    """Two agents drive apps. The first one's turn ended, and the other's pointer and
+    halo faded."""
     active.person.answers["driven"] = [RUNNING]  # someone still drives an app
     active.run("turn-ended")
     assert "presence.turn_done" not in active.names()
@@ -1238,89 +1281,37 @@ def test_turn_ended_with_a_session_that_never_read_switches_nothing_off(world):
 
 
 def test_turn_started(world):
+    world.agent.ended = True
     assert world.run("turn-started") == (0, "", "")
-    assert world.log == [("person.turn_started", (world.agent,), {})]
+    assert (world.agent.signals_turns, world.agent.ended) == (True, False)
 
 
-def test_an_agent_that_used_an_app_cannot_approve_or_resume_itself(world):
-    """After a Deny or a stop the model ran `approve --always` or `resume`, and both
-    worked. Now they are the person's: a caller that has made a tool call is refused,
-    also after it sent a turn end."""
-    assert world.run("get_app_state", "Demo")[0] == 0
-    world.run("turn-ended")
-    for command in (
-        ["approve", "--app", "Demo", "--always"],
-        ["resume"],
-        ["resume", "Demo"],
-    ):
-        code, out, err = world.run(*command)
-        assert (code, out) == (1, "") and "is the user's command" in err
-    assert (
-        "approvals.approve" not in world.names()
-        and "person.resume" not in world.names()
+def test_a_plain_turn_end_lets_go_but_refuses_nothing(active):
+    """Claude Code's Stop and opencode's idle come at every turn end, while background
+    agents of that turn go on: their next read works at once."""
+    active.person.answers["turn_ended"] = person.turn_ended  # the real one
+    active.agent.signals_turns = True  # Claude Code says when its turns start
+    assert active.run("turn-ended") == (0, "", "")
+    code, _, err = active.run("click", "Demo", "0")  # its numbers are of a read let go
+    assert (code, err) == (
+        1,
+        errors.not_active("/Applications/Demo.app").message + "\n",
     )
-    other = AgentSession("the-person")  # the person's terminal: another caller
-    assert world.run("resume", agent=other)[0] == 0
+    assert active.run("get_app_state", "Demo")[0] == 0
+    assert active.run("click", "Demo", "0")[0] == 0
 
 
-def test_a_restarted_helper_still_knows_who_made_tool_calls(world, monkeypatch):
-    """The agent made a call, the person stopped it, the agent ran `helper restart`
-    (or killed the helper) and then `resume`: the new helper had forgotten the
-    callers, and the resume counted as the person's."""
-    monkeypatch.setattr(tools, "_callers", set())
-    monkeypatch.setattr(helper, "process", lambda pid: (1, "/bin/agent", 1030.0))
-    agent_process, terminal = (30, 1030.0), (10, 1010.0)
-    agent = AgentSession(
-        "a", caller=agent_process, parents=frozenset({agent_process, terminal})
-    )
-    assert world.run("get_app_state", "Demo", agent=agent)[0] == 0
-    monkeypatch.setattr(tools, "_callers", set())  # the helper is started again
-    child = AgentSession(
-        "x", parents=frozenset({(80, 1080.0), agent_process, terminal})
-    )
-    for command in (["resume"], ["approve", "--app", "Demo"]):
-        code, _, err = world.run(*command, agent=child)
-        assert code == 1 and "is the user's command" in err
-    person = AgentSession("p", parents=frozenset({(90, 1090.0), terminal}))
-    assert world.run("resume", agent=person)[0] == 0  # a shell that made no call
-    reused = AgentSession("r", parents=frozenset({(30, 5000.0), terminal}))
-    assert (
-        world.run("resume", agent=reused)[0] == 0
-    )  # the pid now names another process
+def test_a_cancelling_turn_end_refuses_calls_until_the_next_turn(active):
+    active.person.answers["turn_ended"] = person.turn_ended
+    assert active.run("turn-started")[0] == 0
+    assert active.run("turn-ended", "--cancel") == (0, "", "")
+    refused = errors.turn_ended().message + "\n"
+    assert active.run("get_app_state", "Demo")[2] == refused
+    assert active.run("turn-started")[0] == 0
+    assert active.run("get_app_state", "Demo")[0] == 0
 
 
-def test_another_session_name_or_a_script_does_not_make_the_agent_the_person(
-    world, monkeypatch
-):
-    """`MACOS_HARNESS_SESSION=x macos-harness resume`, and `approve` started from a
-    script, came from a caller that had made no tool call: both worked. Now the
-    process behind every tool call is remembered, and a command with that process
-    among its parents is refused."""
-    monkeypatch.setattr(tools, "_callers", set())
-    agent_process, terminal = (30, 1030.0), (10, 1010.0)
-    agent = AgentSession(
-        "a", caller=agent_process, parents=frozenset({agent_process, terminal})
-    )
-    assert world.run("get_app_state", "Demo", agent=agent)[0] == 0
-    renamed = AgentSession(
-        "x", parents=frozenset({(80, 1080.0), agent_process, terminal})
-    )
-    for command in (["approve", "--app", "Demo"], ["resume"]):
-        code, _, err = world.run(*command, agent=renamed)
-        assert code == 1 and "is the user's command" in err
-    person = AgentSession(
-        "p", parents=frozenset({(90, 1090.0), terminal})
-    )  # another tab
-    assert world.run("resume", agent=person)[0] == 0
-
-
-def test_stop_resume_and_approve(world):
-    assert world.run("stop") == (0, "Stopped every app.\n", "")
-    assert world.args("person.stop") == (None,)
-    assert world.run("stop", "--app", "Demo") == (0, "Stopped Demo.\n", "")
-    assert world.args("person.stop") == (TARGET,)
-    assert world.run("resume", "Demo") == (0, "Resumed Demo.\n", "")
-    assert world.args("person.resume") == (TARGET,)
+def test_approve(world):
     assert world.run("approve", "--app", "Demo", "--always") == (
         0,
         "Approved Demo.\n",

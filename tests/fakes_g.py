@@ -30,7 +30,6 @@ class FakePresence:
         self.calls: list[tuple] = []
         self.prompts: list[dict] = []
         self.can_ask = can_ask
-        self.stop_callback = self.resume_callback = None
 
     def ask(self, title, subtitle, choices, on_answer):
         if not self.can_ask:
@@ -51,21 +50,6 @@ class FakePresence:
 
     def pointer_activity(self, state):
         self.calls.append(("pointer_activity", state))
-
-    def label(self, text):
-        self.calls.append(("label", text))
-
-    def stopped(self, holds):
-        self.calls.append(("stopped", holds))
-
-    def apps_in_use(self, targets):
-        self.calls.append(("apps_in_use", [target.path for target in targets]))
-
-    def on_stop(self, callback):
-        self.stop_callback = callback
-
-    def on_resume(self, callback):
-        self.resume_callback = callback
 
     def activity(self) -> list[str]:
         return [call[1] for call in self.calls if call[0] == "pointer_activity"]

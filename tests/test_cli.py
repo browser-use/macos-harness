@@ -140,7 +140,7 @@ def test_the_client_imports_only_what_it_was_given():
     top, inner = imports(SRC / "protocol.py")
     assert top - {"__future__"} == {"json", "os", "struct", "__version__"}
     assert inner == {"pathlib"}
-    assert (SRC / "__init__.py").read_text().strip() == '__version__ = "0.2.0"'
+    assert (SRC / "__init__.py").read_text().strip() == '__version__ = "0.2.1"'
 
 
 POISON = """
@@ -188,7 +188,7 @@ def test_version_needs_no_helper():
         env=env(),
         timeout=30,
     )
-    assert (done.returncode, done.stdout, done.stderr) == (0, "0.2.0\n", "")
+    assert (done.returncode, done.stdout, done.stderr) == (0, "0.2.1\n", "")
     assert not os.path.exists(protocol.socket_path())  # none was started
 
 
@@ -208,9 +208,18 @@ def test_the_reply_is_printed_and_its_exit_code_returned(server, capsys):
 
 
 def test_a_failed_call_is_sent_once_and_ends_the_chain(server, capsys):
-    served = server(ok("", "Invalid app: Nope\n", 1))
+    served = server(
+        ok(
+            "",
+            "No app called Nope was found on this Mac. Call `list_apps` and use a name or bundle id from it.\n",
+            1,
+        )
+    )
     assert cli.main(["click", "--app", "Nope", "1"]) == 1  # `&&` stops here
-    assert capsys.readouterr() == ("", "Invalid app: Nope\n")
+    assert capsys.readouterr() == (
+        "",
+        "No app called Nope was found on this Mac. Call `list_apps` and use a name or bundle id from it.\n",
+    )
     assert len(served.requests) == 1  # no retry of an action
 
 
@@ -259,7 +268,10 @@ def test_a_helper_that_never_answers_is_a_timeout(server, capsys, monkeypatch):
     release = threading.Event()
     server(lambda request: release.wait(10))
     assert cli.main(["get_app_state", "Demo"]) == 1
-    assert capsys.readouterr().err == "macOS Harness did not answer in time\n"
+    assert (
+        capsys.readouterr().err
+        == "macOS Harness did not answer within 2 minutes, so the action may or may not have run. Call `get_app_state` to see the app before you try again.\n"
+    )
     release.set()
 
 
@@ -456,7 +468,7 @@ def test_a_helper_of_another_version_is_replaced_and_the_call_runs_once(helper_p
     new = helper_pid()
     assert new not in (None, old.pid)
     info = cli._ping(cli._try_connect())
-    assert info["version"] == "0.2.0"
+    assert info["version"] == "0.2.1"
 
 
 def test_a_helper_that_cannot_start_gives_the_text_with_the_retry_count(private_state):
@@ -533,7 +545,7 @@ def test_helper_status_stop_restart(helper_process):
     assert client("helper", "stop").stdout == "not running\n"
     restarted = client("helper", "restart")
     pid = helper_pid()
-    assert restarted.stdout.startswith(f"running: pid {pid}, version 0.2.0, ")
+    assert restarted.stdout.startswith(f"running: pid {pid}, version 0.2.1, ")
     assert client("helper", "status").stdout == restarted.stdout
     assert client("helper", "restart").returncode == 0
     assert helper_pid() not in (None, pid)

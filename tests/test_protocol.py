@@ -86,7 +86,7 @@ def test_envelope_is_json_rpc_with_argv_and_an_absolute_deadline(monkeypatch):
         "env",
     }
     assert params["callerApi"] == "MacosHarnessIPC-1"
-    assert params["clientVersion"] == "0.2.0"
+    assert params["clientVersion"] == "0.2.1"
     assert params["clientPath"] == os.path.dirname(protocol.__file__)
     assert params["deadlineMs"] == int(deadline * 1000)
     assert params["argv"] == ["click", "--app", "X"] and params["stdin"] is None
@@ -151,7 +151,10 @@ def test_transport_error_texts():
         "errorName": "notAuthenticated",
         "data": None,
     }
-    assert said["stopping"]["message"] == "macOS Harness helper is unavailable."
+    assert (
+        said["stopping"]["message"]
+        == "The macOS Harness helper is shutting down. Run the command again."
+    )
 
 
 def test_version_mismatch_text_says_what_to_do():
@@ -163,16 +166,17 @@ def test_version_mismatch_text_says_what_to_do():
     assert "macos-harness helper restart" in error["message"]
     assert error["data"] == {
         "apiVersion": "MacosHarnessIPC-1",
-        "version": "0.2.0",
+        "version": "0.2.1",
         "path": os.path.dirname(protocol.__file__),
     }
 
 
 def test_the_json_form_of_a_failed_call():
-    assert protocol.failure(errors.stopped_by_user())["error"] == {
-        "code": 111,
-        "name": "stopped_by_user",
-        "message": errors.stopped_by_user().message,
+    took_over = errors.still_interacting("/Applications/Notes.app")
+    assert protocol.failure(took_over)["error"] == {
+        "code": 110,
+        "name": "user_took_over",
+        "message": took_over.message,
         "cancelled": True,
     }
     assert (

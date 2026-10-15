@@ -23,6 +23,7 @@ LOG_BYTES = 1024 * 1024  # helper.log is moved to helper.log.1 above this
 CONNECT_RETRY_S = 0.1
 PING_BUDGET_S = 1.0
 STDIN_WAIT_S = 2.0  # for the first byte, and for each later one
+PARENT_LOOK_S = 0.2  # how often a call looks whether its parent still runs
 
 
 class Failure(Exception):
@@ -68,14 +69,16 @@ def _fail(error: dict, as_json: bool) -> int:
 def _call(argv: list[str]) -> dict:
     """One tool call. It is sent again only when the helper says it ran nothing."""
     deadline = time.time() + protocol.CALL_TIMEOUT_S
-    stdin, restarted = None, False
+    stdin, restarted, parent = None, False, os.getppid()
     while True:
         sock = _connect(deadline)
         message = protocol.request(argv, stdin, os.environ, deadline)
         try:
             with sock:
                 sock.settimeout(max(1.0, deadline - time.time() + 1.0))
-                answer = protocol.call(sock, message)
+                sock.sendall(protocol.pack(message))
+                _wait_for_answer(sock, deadline, parent)
+                answer = protocol.read(sock)
         except TimeoutError:
             raise Failure("request_timed_out") from None
         except (EOFError, OSError, ValueError):
@@ -93,6 +96,17 @@ def _call(argv: list[str]) -> dict:
             return answer
         else:
             raise Failure("helper_stopped")
+
+
+def _wait_for_answer(sock: socket.socket, deadline: float, parent: int) -> None:
+    """Some hosts leave an interrupted command running (`codex exec`, `pi -p`). Once
+    the process that started this one is gone, this one goes too: the helper sees its
+    socket close and stops the action at its next event."""
+    while not select.select([sock], [], [], PARENT_LOOK_S)[0]:
+        if os.getppid() != parent:
+            os._exit(130)
+        if time.time() > deadline + 1.0:
+            raise TimeoutError
 
 
 def _try_connect() -> socket.socket | None:

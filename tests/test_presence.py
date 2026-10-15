@@ -13,11 +13,8 @@ from fakes_i import (  # noqa: F401 - the last three are fixtures
 )
 
 import macos_harness.overlay as overlay_module
-from macos_harness import presence, statusitem
-from macos_harness.model import AppTarget
+from macos_harness import panel, presence
 
-CHESS = AppTarget("/System/Applications/Chess.app", "com.apple.Chess", "Chess", 42)
-STICKIES = AppTarget("/System/Applications/Stickies.app", "com.apple.Stickies", "S", 43)
 CHOICES = ["Deny", "Allow for this session", "Always allow"]
 
 
@@ -30,9 +27,7 @@ def every_call() -> list:
         lambda: presence.pointer_activity("loading"),
         lambda: presence.flash((280, 190, 40, 20), here),
         lambda: presence.halo(here),
-        lambda: presence.label("Clicking in Chess"),
         lambda: presence.live_view(here),
-        lambda: presence.apps_in_use([CHESS]),
         lambda: presence.ask("Allow Chess?", None, CHOICES, print),
         lambda: presence.turn_done(),
     ]
@@ -83,10 +78,10 @@ def test_with_the_switch_off_nothing_is_sent_started_or_shown(
 
     shown = [call() for call in every_call()]
 
-    assert shown == [False] * 10  # ask among them: nobody will see the question
+    assert shown == [False] * 8  # ask among them: nobody will see the question
     assert listener.commands() == []
     assert seen == []
-    assert statusitem.MENU.asks == []
+    assert panel.ASKS == []
 
 
 def test_every_call_returns_in_under_a_millisecond_with_a_dead_overlay(
@@ -113,7 +108,7 @@ def test_no_call_ever_raises(seen: list, monkeypatch) -> None:
 
     monkeypatch.setattr(overlay_module, "address", broken)
     monkeypatch.setattr(presence, "_on_main", broken)
-    monkeypatch.setattr(statusitem, "draw", broken)
+    monkeypatch.setattr(panel, "draw", broken)
 
     for call in every_call():
         call()
@@ -123,17 +118,17 @@ def test_no_call_ever_raises(seen: list, monkeypatch) -> None:
     presence.pointer_activity(7)
 
 
-def test_a_broken_menu_bar_never_reaches_the_main_thread_as_an_error(
+def test_a_broken_panel_never_reaches_the_main_thread_as_an_error(
     seen: list, monkeypatch
 ) -> None:
-    def broken(menu):
-        raise RuntimeError("no menu bar")
+    def broken():
+        raise RuntimeError("no screen")
 
-    monkeypatch.setattr(statusitem, "draw", broken)
+    monkeypatch.setattr(panel, "draw", broken)
 
-    presence.label("Clicking in Chess")  # the fake main thread runs it at once
+    presence.ask("Allow Chess?", None, CHOICES, print)  # the fake main thread runs it
 
-    assert statusitem.MENU.label == "Clicking in Chess"
+    assert [ask.title for ask in panel.ASKS] == ["Allow Chess?"]
 
 
 def test_while_the_person_has_the_app_idle_and_loading_are_ignored(
@@ -175,21 +170,20 @@ def test_a_question_is_answered_once_on_the_main_thread(
 
     assert presence.ask("Allow Chess?", "It can move pieces.", CHOICES, answers.append)
 
-    assert statusitem.MENU.asks == []  # nothing yet: the caller's thread shows nothing
+    assert panel.ASKS == []  # nothing yet: the caller's thread shows nothing
     queued.pop()()  # the main thread
-    (ask,) = statusitem.MENU.asks
+    (ask,) = panel.ASKS
     assert (ask.title, ask.subtitle, ask.choices) == (
         "Allow Chess?",
         "It can move pieces.",
         CHOICES,
     )
-    rows = dict(seen[-1])
-    rows["Always allow"]()  # the person picks in the menu
-    rows["Deny"]()  # and a second pick comes too late
-    statusitem.MENU.answer(ask, "Deny")
+    assert seen[-1] == [ask]  # its panel is drawn
+    panel.answer(ask, "Always allow")  # the person picks
+    panel.answer(ask, "Deny")  # and a second pick comes too late
 
     assert answers == ["Always allow"]
-    assert statusitem.MENU.asks == []
+    assert panel.ASKS == []
 
 
 def test_a_question_settled_elsewhere_is_withdrawn_unanswered(seen: list) -> None:
@@ -199,39 +193,16 @@ def test_a_question_settled_elsewhere_is_withdrawn_unanswered(seen: list) -> Non
 
     assert presence.withdraw("Allow Chess?")
 
-    assert [ask.title for ask in statusitem.MENU.asks] == ["Allow Stickies?"]
-    assert "Allow Chess?" not in dict(seen[-1]) and answers == []
-    statusitem.MENU.asks.clear()
+    assert [ask.title for ask in panel.ASKS] == ["Allow Stickies?"]
+    assert [ask.title for ask in seen[-1]] == ["Allow Stickies?"] and answers == []
 
 
-def test_the_menu_stops_one_app_or_all_of_them_and_resumes(seen: list) -> None:
-    stopped, resumed = [], []
-    presence.on_stop(stopped.append)
-    presence.on_resume(resumed.append)
-
-    presence.apps_in_use([CHESS, STICKIES])
-    rows = dict(seen[-1])
-    rows["Stop Using Chess"]()
-    rows["Stop Using All Apps"]()
-    rows["Resume"]()
-
-    assert stopped == [CHESS, None]
-    assert resumed == [None]
-
-
-def test_the_label_is_the_first_row_and_the_end_of_a_turn_empties_the_menu(
+def test_the_end_of_a_turn_keeps_a_waiting_question(
     seen: list, listener: Listener
 ) -> None:
-    presence.apps_in_use([CHESS])
-    presence.label("Clicking in Chess")
-    assert seen[-1][0] == ("Clicking in Chess", None)
-    presence.label("Clicked in Chess")
-    assert seen[-1][0] == ("Clicked in Chess", None)
     presence.ask("Allow Stickies?", None, CHOICES, print)
 
     presence.turn_done()
 
-    titles = [title for title, _pick in seen[-1]]
-    # A question stays until the person answers it.
-    assert titles == ["No Active Sessions", "", "Allow Stickies?", *CHOICES]
+    assert [ask.title for ask in panel.ASKS] == ["Allow Stickies?"]
     assert listener.commands() == [{"cmd": "done"}]

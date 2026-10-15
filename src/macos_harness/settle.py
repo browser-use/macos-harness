@@ -95,6 +95,7 @@ def wait(
     quiet: float = QUIET,
     limit: float = LIMIT,
     clock: Any = time,
+    abandoned: Callable[[], bool] = lambda: False,
 ) -> Capture | None:
     """The capture `read` built once the UI is quiet and not loading. None at the limit."""
     poll = poll or (POLL_WEB_LIKE if kind.web_like else POLL_NATIVE)
@@ -104,6 +105,8 @@ def wait(
         start = clock.monotonic()
         while clock.monotonic() - start < limit:
             clock.sleep(poll)
+            if abandoned():  # nobody waits for this read any more
+                raise errors.request_timed_out()
             if heard.quiet_for() < quiet:
                 continue
             window = _key_window(target)

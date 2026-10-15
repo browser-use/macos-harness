@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
+import json
 import os
+import shlex
+import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
+import types
 
 import fakes_a
 import pytest
@@ -151,23 +156,6 @@ def test_app_sessions_are_per_agent_and_app(world):
     assert sessions.agent(50, {}) is one  # the agent keeps its turn marks
 
 
-def test_every_call_says_which_process_is_behind_it_whatever_its_session_name():
-    sessions = tree(*PLAIN)
-    for env in ({}, {"MACOS_HARNESS_SESSION": "run-7"}):
-        agent = sessions.agent(50, env)
-        assert agent.caller == (30, 1030.0)  # the agent, not the shell it started
-        assert agent.parents == {
-            (40, 1040.0),
-            (30, 1030.0),
-            (20, 1020.0),
-            (10, 1010.0),
-            (1, 1001.0),
-        }
-    assert sessions.agent(70, {"MACOS_HARNESS_SESSION": "run-7"}).parents >= {
-        (60, 1060.0)
-    }
-
-
 def test_an_agent_whose_process_exited_is_forgotten_once():
     table = {pid: (parent, path, 1000.0 + pid) for pid, parent, path in PLAIN}
     sessions = helper.Sessions(process=table.get)
@@ -175,11 +163,158 @@ def test_an_agent_whose_process_exited_is_forgotten_once():
     named = sessions.agent(50, {"MACOS_HARNESS_SESSION": "run-7"})
     assert sessions.gone() == []
     table[30] = (20, AGENT, 9999.0)  # the pid was given to a new process
+    table[40] = (30, "/bin/zsh", 9998.0)  # which started a shell of its own
     assert sessions.gone() == [agent] and sessions.gone() == []
     assert sessions.agent(50, {}) is not agent
     del table[30]
     assert len(sessions.gone()) == 1
     assert sessions.agent(50, {"MACOS_HARNESS_SESSION": "run-7"}) is named  # no process
+
+
+def test_a_shell_its_host_left_running_gets_no_session_of_its_own():
+    """The host died while its shell ran `get_app_state && click && type_text`. The
+    shell lives on under launchd: its next command is refused as a turn that is over,
+    not given a session of its own whose host never dies."""
+    table = {pid: (parent, path, 1000.0 + pid) for pid, parent, path in PLAIN}
+    sessions = helper.Sessions(process=table.get)
+    first = sessions.agent(50, {})
+    del table[30]
+    table[40] = (1, "/bin/zsh", 1040.0)  # the same shell, now under launchd
+    table[55] = (40, "/usr/bin/python3", 1055.0)  # its next command
+    orphan = sessions.agent(55, {})
+    assert (orphan.key, orphan.exited) == (first.key, True)
+    table[66] = (1, "/bin/sh", 1066.0)  # a launchd job that runs a shell itself
+    table[77] = (66, "/usr/bin/python3", 1077.0)
+    assert not sessions.agent(77, {}).exited
+    del table[40]
+    sessions.gone()
+    assert (40, 1040.0) not in sessions._shells  # a shell's record goes with it
+
+
+# A client that prints its reply, from a process of its own.
+REPLYING_CLIENT = """
+import json, socket, sys, time
+from macos_harness import protocol
+message = protocol.request(sys.argv[1:], None, {}, time.time() + 120)
+with socket.socket(socket.AF_UNIX) as sock:
+    sock.connect(protocol.socket_path())
+    print(json.dumps(protocol.call(sock, message)["result"]), flush=True)
+"""
+
+
+def test_a_chain_its_dead_host_left_running_is_refused_but_a_launchd_job_is_not(
+    served, tmp_path
+):
+    """The host dies during `get_app_state && sleep && get_app_state`: its shell goes
+    on under launchd, and its next command is refused. A job whose shell launchd
+    started by itself is served."""
+    client = shlex.join(
+        [sys.executable, "-c", REPLYING_CLIENT, "get_app_state", "Demo"]
+    )
+    go = tmp_path / "go"
+    chain = f"{client} && until [ -e {go} ]; do sleep 0.02; done && {client}"
+    spawn = (
+        "import subprocess, sys, time; subprocess.Popen(['/bin/sh', '-c', sys.argv[1]])"
+    )
+    host = subprocess.Popen(
+        [sys.executable, "-c", spawn + "; time.sleep(60)", chain],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert json.loads(host.stdout.readline())["exit"] == 0
+        host.kill()
+        host.wait()
+        go.touch()
+        refused = json.loads(host.stdout.readline())
+        assert refused["stderr"] == errors.agent_exited().message + "\n"
+    finally:
+        host.kill()
+        go.touch()
+    job_go = tmp_path / "job-go"
+    job = f"until [ -e {job_go} ]; do sleep 0.02; done && {client}"
+    starter = subprocess.Popen(
+        [sys.executable, "-c", spawn, job], stdout=subprocess.PIPE, text=True
+    )
+    starter.wait()  # gone before its shell's first command: that shell is launchd's
+    job_go.touch()
+    assert json.loads(starter.stdout.readline())["exit"] == 0
+
+
+def lazy_module(slow=0.05) -> types.ModuleType:
+    """A framework module as PyObjC builds it: a name is bound on first use, and its
+    table entry is popped then."""
+    module = types.ModuleType("Framework")
+    names = vars(module)
+
+    def createFrameworkDirAndGetattr():  # the name PyObjC gives it
+        funcmap = {"AXUIElementCreateApplication": "b@i"}
+
+        def __getattr__(name):
+            if name in funcmap:
+                time.sleep(slow)  # loading the function from the bundle
+                funcmap.pop(name)
+                names[name] = f"bound {name}"
+                return names[name]
+            raise AttributeError(name)
+
+        return __getattr__
+
+    names["__getattr__"] = createFrameworkDirAndGetattr()
+    return module
+
+
+def first_use_from_eight_threads(module) -> list:
+    start, results = threading.Barrier(8), []
+
+    def use():
+        start.wait()
+        try:
+            results.append(module.AXUIElementCreateApplication)
+        except Exception as error:  # noqa: BLE001 - what each thread saw
+            results.append(error)
+
+    threads = [threading.Thread(target=use) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    return results
+
+
+def test_eight_threads_that_first_use_one_name_at_once_all_get_it():
+    raced = first_use_from_eight_threads(lazy_module())
+    assert any(isinstance(r, KeyError) for r in raced)  # the bug, without the lock
+    module = lazy_module()
+    helper.one_lookup_at_a_time([module, os])  # a plain module is left alone
+    assert (
+        first_use_from_eight_threads(module)
+        == ["bound AXUIElementCreateApplication"] * 8
+    )
+    with pytest.raises(AttributeError):
+        getattr(module, "NoSuchName")  # noqa: B009
+
+
+def test_the_real_frameworks_get_the_lock():
+    pytest.importorskip("ApplicationServices")
+    helper.one_lookup_at_a_time()
+    import AppKit
+    import ApplicationServices
+    import CoreFoundation
+    import Foundation
+    import HIServices
+    import Quartz
+
+    for module in (
+        AppKit,
+        ApplicationServices,
+        CoreFoundation,
+        Foundation,
+        HIServices,
+        Quartz,
+    ):
+        assert vars(module)["__getattr__"].func is helper._looked_up
+    assert ApplicationServices.AXUIElementCreateApplication  # still finds names
 
 
 def test_the_real_process_table_and_the_real_socket_peer():
@@ -368,13 +503,13 @@ def test_each_call_leaves_one_line_in_the_log_that_names_no_app(world, capsys):
 def test_telemetry_gets_the_command_and_nothing_about_the_app(world, monkeypatch):
     seen = []
     monkeypatch.setattr(helper.telemetry, "capture_cli", lambda *a: seen.append(a))
-    world.person.answers["gate"] = errors.stopped_by_user()
+    world.person.answers["gate"] = errors.still_interacting("/Applications/Demo.app")
     answer("get_app_state", "Demo", env={"MACOS_HARNESS_TELEMETRY": "0"})
     command, success, seconds, env, error_name = seen[0]
     assert (command, success, error_name) == (
         "get_app_state",
         False,
-        "stopped_by_user",
+        "user_took_over",
     )
     assert env == {"MACOS_HARNESS_TELEMETRY": "0"} and 0 <= seconds < 5
 
@@ -455,9 +590,11 @@ def test_a_garbage_frame_is_dropped(served):
 
 
 def test_shutdown_waits_for_the_running_call_and_refuses_new_ones(served):
+    """`macos-harness helper stop` also ends what runs: the call stops at its next
+    step and says so, then the helper goes."""
     entered, leave, done = threading.Event(), threading.Event(), threading.Event()
 
-    def slow(*args):
+    def slow(*args, **kwargs):
         entered.set()
         leave.wait(5)
 
@@ -477,9 +614,186 @@ def test_shutdown_waits_for_the_running_call_and_refuses_new_ones(served):
     leave.set()
     assert done.wait(2)
     running.join(2)
-    assert replies[0]["result"]["exit"] == 0  # the running call got its answer
+    result = replies[0]["result"]  # the running call got its answer: cancelled
+    assert result["exit"] == 1 and result["stderr"] == (
+        errors.helper_stopped().message + "\n"  # not "did not answer within 2 minutes"
+    )
     with pytest.raises(OSError), socket.socket(socket.AF_UNIX) as sock:
         sock.connect(protocol.socket_path())  # nobody accepts any more
+
+
+# A client that sends one call and waits for its reply, as the real one does.
+WAITING_CLIENT = """
+import socket, sys, time
+from macos_harness import protocol
+env = {"MACOS_HARNESS_SESSION": "cut"}
+message = protocol.request(sys.argv[1:], None, env, time.time() + 120)
+with socket.socket(socket.AF_UNIX) as sock:
+    sock.connect(protocol.socket_path())
+    protocol.call(sock, message)
+"""
+
+
+def slow_typing(served) -> list[str]:
+    """type_text types one key per 10 ms, 5 s for 500, and notes where it stopped."""
+    typed = []
+
+    def type_text(app, text):
+        for key in text:
+            if app.cancel():
+                typed.append("cancelled")
+                raise errors.user_changed(app.target.path)  # what a cancelled one says
+            typed.append(key)
+            time.sleep(0.01)
+
+    served.actions.answers["type_text"] = type_text
+    return typed
+
+
+def typing_began(typed: list[str]) -> float:
+    deadline = time.time() + 10
+    while len(typed) < 5:
+        assert time.time() < deadline, "typing never began"
+        time.sleep(0.005)
+    return deadline
+
+
+def keys_until_cancelled(typed: list[str], deadline: float) -> int:
+    at = len(typed)
+    while typed[-1] != "cancelled":
+        assert time.time() < deadline, "typing went on to the end"
+        time.sleep(0.005)
+    return len(typed) - at
+
+
+def test_a_killed_client_stops_its_running_action_at_the_next_key(served):
+    """The host's interrupt is the stop button: Ctrl+C or Esc ends the tool's process,
+    and a long type_text, hold or drag stops at its next event."""
+    typed = slow_typing(served)
+    session = {"MACOS_HARNESS_SESSION": "cut"}
+    assert call(message("get_app_state", "Demo", env=session))["result"]["exit"] == 0
+    client = subprocess.Popen(
+        [sys.executable, "-c", WAITING_CLIENT, "type_text", "Demo", "x" * 500]
+    )
+    deadline = typing_began(typed)
+    client.kill()
+    client.wait()
+    assert keys_until_cancelled(typed, deadline) <= 2  # the key on its way, no other
+
+
+# What a host runs: two calls, the second one left running. It prints that one's pid.
+HOST = """
+import json, subprocess, sys, time
+client = json.loads(sys.argv[1])
+subprocess.run(client + ["get_app_state", "Demo"], stdout=subprocess.DEVNULL)
+print(subprocess.Popen(client + ["type_text", "Demo", "x" * 500]).pid, flush=True)
+time.sleep(60)
+"""
+
+
+def keys_after_the_host_is_killed(served, client: list[str], env: dict) -> int:
+    """`codex exec` and `pi -p` die on Ctrl+C and leave their command running."""
+    typed = slow_typing(served)
+    host = subprocess.Popen(
+        [sys.executable, "-c", HOST, json.dumps(client)],
+        stdout=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    pid = None
+    try:
+        pid = int(host.stdout.readline())
+        deadline = typing_began(typed)
+        host.kill()
+        host.wait()
+        return keys_until_cancelled(typed, deadline)
+    finally:
+        host.kill()
+        if pid:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+
+
+def test_a_client_whose_host_died_ends_and_its_typing_stops(served):
+    """The client is a child of the host: it sees its parent go and exits."""
+    env = {**os.environ, "MACOS_HARNESS_SESSION": "cut"}  # the helper knows no process
+    assert keys_after_the_host_is_killed(served, fakes_a.CLIENT, env) < 40  # 0.4 s
+
+
+def test_a_call_whose_agent_process_died_stops_although_its_client_lives(served):
+    """A client that does not watch its parent (one with a shell between them): the
+    helper sees the agent's process go."""
+    waiting = WAITING_CLIENT.replace('{"MACOS_HARNESS_SESSION": "cut"}', "{}")
+    client = [sys.executable, "-c", waiting]
+    keys = keys_after_the_host_is_killed(served, client, dict(os.environ))
+    assert keys < 40  # 0.4 s: the helper looks every 0.25 s
+
+
+def test_a_cancelling_turn_end_stops_the_action_its_agent_left_running(served):
+    """Codex's Interrupt, Pi's agent_end, a session's end: typing stops at the next
+    key."""
+    typed, replies = slow_typing(served), []
+    session = {"MACOS_HARNESS_SESSION": "cut"}
+    assert call(message("get_app_state", "Demo", env=session))["result"]["exit"] == 0
+    typing = threading.Thread(
+        target=lambda: replies.append(
+            call(message("type_text", "Demo", "x" * 500, env=session))
+        )
+    )
+    typing.start()
+    deadline = typing_began(typed)
+    cancel = message("turn-ended", "--cancel", env=session)
+    ended = threading.Thread(target=lambda: call(cancel))
+    ended.start()
+    assert keys_until_cancelled(typed, deadline) <= 2
+    ended.join(2)
+    typing.join(2)
+    assert not ended.is_alive()  # it let go of the app once the action stopped
+    # The host left the command running: its output may still be read.
+    assert replies[0]["result"]["stderr"] == errors.agent_left().message + "\n"
+
+
+def test_claude_code_s_stop_leaves_a_background_agent_s_action_running(served):
+    """Stop comes when the main turn ends, while background agents still type."""
+    typed = slow_typing(served)
+    session = {"MACOS_HARNESS_SESSION": "cut"}
+    assert call(message("get_app_state", "Demo", env=session))["result"]["exit"] == 0
+    text, replies = "x" * 60, []
+    typing = threading.Thread(
+        target=lambda: replies.append(
+            call(message("type_text", "Demo", text, env=session))
+        )
+    )
+    typing.start()
+    typing_began(typed)
+    assert call(message("turn-ended", env=session))["result"]["exit"] == 0
+    typing.join(5)
+    assert typed == list(text) and replies[0]["result"]["exit"] == 0
+
+
+def test_a_killed_client_waiting_for_the_person_frees_the_app_within_a_second(served):
+    """Ctrl+C on a call that waits, inside the app's queue, for the person to finish:
+    the next call on that app got in only when the wait ran out (up to 100 s)."""
+    calls, waiting = [], threading.Event()
+
+    def gate(agent, target, state_read, abandoned=lambda: False):
+        calls.append(1)
+        if len(calls) == 2:  # the second gate, in the queue: the person is busy
+            waiting.set()
+            while not abandoned():
+                time.sleep(0.01)
+            raise errors.request_timed_out()
+
+    served.person.answers["gate"] = gate
+    client = subprocess.Popen(
+        [sys.executable, "-c", WAITING_CLIENT, "get_app_state", "Demo"]
+    )
+    assert waiting.wait(10), "the call never reached the person's wait"
+    client.kill()
+    client.wait()
+    began = time.monotonic()
+    with helper.app_queue(TARGET):
+        assert time.monotonic() - began < 1.0
 
 
 def test_a_permission_error_makes_the_helper_exit_after_the_reply(served, monkeypatch):
@@ -503,7 +817,7 @@ def test_a_permission_error_makes_the_helper_exit_after_the_reply(served, monkey
 def test_other_errors_do_not_end_the_helper(served, monkeypatch):
     stops = []
     monkeypatch.setattr(helper, "shutdown", lambda: stops.append(1))
-    served.person.answers["gate"] = errors.stopped_by_user()
+    served.person.answers["gate"] = errors.still_interacting("/Applications/Demo.app")
     call(message("get_app_state", "Demo"))
     time.sleep(0.05)
     assert stops == []

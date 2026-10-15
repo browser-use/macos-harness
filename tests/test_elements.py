@@ -189,7 +189,10 @@ def test_refetch_has_six_distinct_failure_outcomes(revisions):
         f"looking it up again could not be {{}}. {RETRY}"
     )
     outcomes = {
-        (9999, never): "No element has the ID 9999",
+        (
+            9999,
+            never,
+        ): "No element has the ID 9999 in the last read. Use an ID from the newest `get_app_state` text.",
         (1, never): refetch.format("started"),  # its twin is in the old tree
         (3, reads(field(), field())): f"That element ID is from an older read. {RETRY}",
         (3, reads(field(title="Other"), field(title="Other"))): refetch.format(

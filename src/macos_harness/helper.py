@@ -12,6 +12,7 @@ import fcntl
 import functools
 import os
 import re
+import select
 import signal
 import socket
 import struct
@@ -20,12 +21,14 @@ import threading
 import time
 import traceback
 from collections import deque
+from collections.abc import Callable
 
 from . import protocol, runloop, telemetry, tools
 from .model import AgentSession, AppSession, AppTarget
 
 IDLE_EXIT_S = 15 * 60.0  # no call for this long: exit
 IDLE_TICK_S = 5.0
+HOST_LOOK_S = 0.25  # how often a running call looks whether its agent still runs
 IO_TIMEOUT_S = 10.0  # per frame, read and write
 LOCK_WAIT_S = 5.0  # a helper that is on its way out still holds the lock
 EXIT_CAP_S = protocol.CALL_TIMEOUT_S + 10.0  # a stuck exit ends here
@@ -91,6 +94,8 @@ class Sessions:
         self.revisions = None  # the Revisions class. None: elements.Revisions
         self._agents: dict[str, AgentSession] = {}
         self._born: dict[str, tuple[int, float]] = {}  # key -> the agent's process
+        # (pid, start) of each shell between a client and its agent -> that agent
+        self._shells: dict[tuple[int, float], tuple[int, float]] = {}
         self._apps: dict[tuple[str, str], AppSession] = {}
         self._lock = threading.Lock()
 
@@ -114,6 +119,15 @@ class Sessions:
             parents = self._parents(peer_pid)
             if agent is None:
                 born = None if key else _agent_process(parents)
+                shells = [] if key else _shells(parents)
+                for shell in shells:
+                    host = self._shells.get(shell)
+                    if host and host != born and not self._runs(host):
+                        # The host died and left its shell running: the shell's next
+                        # command would open a session of its own and act on.
+                        return AgentSession(f"{host[0]}:{host[1]}", exited=True)
+                if born:
+                    self._shells.update(dict.fromkeys(shells, born))
                 key = key or (f"{born[0]}:{born[1]}" if born else "no-agent")
                 agent = self._agents.get(key)
             if agent is None:
@@ -123,23 +137,34 @@ class Sessions:
                 if born:
                     self._born[key] = born
             agent.env = dict(env)
-            agent.caller = _agent_process(parents)
-            agent.parents = frozenset((pid, start) for pid, _, start in parents)
         return agent
 
     def gone(self) -> list[AgentSession]:
         """Forget the agents whose process has exited, and return them."""
         with self._lock:
             born = dict(self._born)
-        dead = [
-            key
-            for key, (pid, start) in born.items()
-            if (self.process(pid) or (0, "", None))[2] != start
-        ]
+        dead = [key for key, started in born.items() if not self._runs(started)]
         with self._lock:
+            self._shells = {s: b for s, b in self._shells.items() if self._runs(s)}
             for key in dead:
                 del self._born[key]
             return [self._agents.pop(key) for key in dead]
+
+    def _runs(self, born: tuple[int, float]) -> bool:
+        return (self.process(born[0]) or (0, "", None))[2] == born[1]
+
+    def host_gone(self, agent: AgentSession) -> Callable[[], bool]:
+        """A check that turns True once the agent's process is gone. Some hosts die on
+        Ctrl+C and leave their command running, so the socket of its call stays open."""
+        born, looked, gone = self._born.get(agent.key), 0.0, False
+
+        def check() -> bool:
+            nonlocal looked, gone
+            if born and not gone and time.monotonic() - looked >= HOST_LOOK_S:
+                looked, gone = time.monotonic(), not self._runs(born)
+            return gone
+
+        return check
 
     def app(self, agent: AgentSession, target: AppTarget) -> AppSession:
         with self._lock:
@@ -167,6 +192,16 @@ def _agent_process(parents: list[tuple[int, str, float]]) -> tuple[int, float] |
         if os.path.basename(path).lstrip("-") not in WRAPPERS:
             return pid, start
     return None
+
+
+def _shells(parents: list[tuple[int, str, float]]) -> list[tuple[int, float]]:
+    """(pid, start time) of the shells and wrappers before the agent."""
+    shells = []
+    for pid, path, start in parents:
+        if os.path.basename(path).lstrip("-") not in WRAPPERS:
+            break
+        shells.append((pid, start))
+    return shells
 
 
 def _bundles(path: str) -> list[str]:
@@ -341,7 +376,7 @@ def _handle(conn: socket.socket) -> None:
             return
         if not isinstance(message, dict):
             return
-        answer, error_name = answer_for(message, pid, uid)
+        answer, error_name = answer_for(message, pid, uid, _gone(conn))
         try:
             frame = protocol.pack(answer)
         except protocol.FrameTooLarge:
@@ -355,7 +390,19 @@ def _handle(conn: socket.socket) -> None:
             shutdown()
 
 
-def answer_for(message: dict, pid: int, uid: int) -> tuple[dict, str | None]:
+def _gone(conn: socket.socket):
+    """A check, asked before every event of an action, whether the client has gone. It
+    sends nothing after its request, so its socket turns readable only when it closes:
+    the host interrupted the tool (Ctrl+C, Esc) and the action stops right there. So
+    does every action once the helper is told to stop (`macos-harness helper stop`)."""
+    poller = select.poll()
+    poller.register(conn, select.POLLIN | select.POLLHUP)
+    return lambda: STATE.stopping or bool(poller.poll(0))
+
+
+def answer_for(
+    message: dict, pid: int, uid: int, abandoned=lambda: False
+) -> tuple[dict, str | None]:
     """The reply to one message, and the name of the tool error in it, if any."""
     id, method = message.get("id"), message.get("method")
     if uid != os.getuid():
@@ -382,7 +429,7 @@ def answer_for(message: dict, pid: int, uid: int) -> tuple[dict, str | None]:
         if not accepted:
             return protocol.error(id, "stopping"), None
         agent = SESSIONS.agent(pid, env)
-        started = time.monotonic()
+        host_gone, started = SESSIONS.host_gone(agent), time.monotonic()
         try:
             outcome = tools.execute(
                 params.get("argv") or [],
@@ -390,6 +437,8 @@ def answer_for(message: dict, pid: int, uid: int) -> tuple[dict, str | None]:
                 agent,
                 params.get("cwd") or "/",
                 deadline,
+                abandoned,
+                host_gone,
             )
         except tools.NeedStdin:
             return protocol.result(id, {"needStdin": True}), None
@@ -455,6 +504,35 @@ def idle_loop(clock=time) -> None:
 
 
 # --- start and exit -------------------------------------------------------------------
+
+LAZY = "createFrameworkDirAndGetattr.<locals>.__getattr__"  # PyObjC's lookup of a name
+
+
+def one_lookup_at_a_time(modules=None) -> None:
+    """PyObjC binds a framework's function or constant on its first use, and two
+    threads that look up the same name at once can fail (`KeyError:
+    'AXUIElementCreateApplication'`: its table entry was popped by the other). One
+    lock makes these first lookups take turns. Calls run on threads of their own."""
+    if modules is None:
+        import AppKit  # noqa: F401 - these four pull in every framework we use
+        import ApplicationServices  # noqa: F401
+        import Foundation  # noqa: F401
+        import Quartz  # noqa: F401
+
+        modules = list(sys.modules.values())
+    lock = threading.RLock()
+    for module in modules:
+        names = getattr(module, "__dict__", {})
+        lazy = names.get("__getattr__")
+        if getattr(lazy, "__qualname__", "").endswith(LAZY):
+            names["__getattr__"] = functools.partial(_looked_up, lock, names, lazy)
+
+
+def _looked_up(lock, names: dict, lazy, name: str):
+    with lock:
+        if name in names:  # another thread bound it while this one waited
+            return names[name]
+        return lazy(name)
 
 
 def _take_lock() -> int | None:
@@ -525,6 +603,7 @@ def main() -> None:
     try:
         sock = _bind()
         log("helper started, pid", os.getpid(), protocol.socket_path())
+        _quietly(one_lookup_at_a_time)  # before any thread of its own starts
         _quietly(lambda: mods.pasteboard.restore_saved())
         _quietly(lambda: mods.screenshot.cleanup())
         _quietly(lambda: mods.person.start_watch(os.getpid()))

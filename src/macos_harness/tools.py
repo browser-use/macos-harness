@@ -11,7 +11,6 @@ import dataclasses
 import importlib
 import json
 import math
-import os
 import time
 import traceback
 from collections.abc import Callable
@@ -50,18 +49,6 @@ DIRECTIONS = {w[:n]: w for w in ("up", "down", "left", "right") for n in (1, len
 SELECTIONS = ("text", "cursor_before", "cursor_after")
 # The commands `--help` names. The rest are for the person and for the host's hooks.
 HELP_COMMANDS = ("doctor", "skill", "install", "uninstall", "telemetry")
-# What the person sees while a tool runs, and after it: "Clicking in Safari".
-LABELS = {
-    "click": ("Clicking", "Clicked"),
-    "drag": ("Dragging", "Dragged"),
-    "scroll": ("Scrolling", "Scrolled"),
-    "press_key": ("Pressing a key", "Pressed a key"),
-    "type_text": ("Typing text", "Typed text"),
-    "set_value": ("Setting a value", "Set a value"),
-    "select_text": ("Selecting text", "Selected text"),
-    "perform_secondary_action": ("Performing an action", "Performed an action"),
-    "paste": ("Pasting", "Pasted"),
-}
 
 
 class NeedStdin(Exception):
@@ -87,6 +74,8 @@ class Call:
     agent: AgentSession
     cwd: str
     deadline: float  # time.time() seconds at which the client gives up
+    # True once the client is gone (the host interrupted the tool): stop the action
+    abandoned: Callable[[], bool] = lambda: False
 
 
 class Result(NamedTuple):
@@ -177,23 +166,27 @@ def _session(call: Call, state_read: bool):
     agent = call.agent
     if not call.args.get("app", "").strip():  # checked last, after the tool's own
         raise errors.usage("app")
+    if agent.ended:  # before the approval: nobody asks the person for a dead turn
+        raise errors.turn_ended()
     target = mods.apps.resolve(call.args["app"])
     if target.bundle_id == PANEL_SERVICE:  # the panel of an app it reads
         seen = [app.watching for app in mods.helper.SESSIONS.apps(agent)]
         target = mods.apps.panel_owner([t for t in seen if t is not None])
     policy = mods.policy.decide(agent, target)
-    mods.approvals.ensure(agent, target, policy, call.deadline)
-    mods.permissions.gate(call.deadline)
+    mods.approvals.ensure(
+        agent, target, policy, call.deadline, abandoned=call.abandoned
+    )
+    mods.permissions.gate(call.deadline, abandoned=call.abandoned)
     mods.lockscreen.gate(state_read)
-    mods.person.gate(agent, target, state_read)
+    mods.person.gate(agent, target, state_read, abandoned=call.abandoned)
     with mods.helper.app_queue(target):
         # The wait for the app's queue may have been long: the person may have taken
-        # the app or stopped it meanwhile, and the client may have given up.
-        mods.person.gate(agent, target, state_read)
+        # the app meanwhile, and the client may have given up or gone.
+        mods.person.gate(agent, target, state_read, abandoned=call.abandoned)
         _still_wanted(call)
         app = mods.helper.SESSIONS.app(agent, target)
         began = time.monotonic()
-        app.cancel = lambda: mods.person.interrupted(target, began)
+        app.cancel = lambda: call.abandoned() or mods.person.interrupted(target, began)
         try:
             yield app, target
         except errors.HarnessError as error:
@@ -206,7 +199,8 @@ def _still_wanted(call: Call, planned: float = 0.0) -> None:
     """Refuse a call whose client has given up, or will have before the action ends
     (`planned` seconds of holds and typing): done after that, the model would not
     know and would do it again."""
-    if call.deadline and time.time() + planned >= call.deadline - DEADLINE_MARGIN_S:
+    late = call.deadline and time.time() + planned >= call.deadline - DEADLINE_MARGIN_S
+    if late or call.abandoned():
         raise errors.request_timed_out()
 
 
@@ -287,7 +281,7 @@ def _read_state(call: Call, app: AppSession, target: AppTarget) -> tuple[str, An
     except errors.HarnessError as error:
         if error.name != errors.app_not_running("").name:
             raise
-        target, launched = mods.apps.launch(target), True
+        target, launched = mods.apps.launch(target, abandoned=call.abandoned), True
     kind = mods.apps.kind(target)
     switched_on = False
     if app.watching != target:  # the first read, or the app came back as a new process
@@ -308,7 +302,9 @@ def _read_state(call: Call, app: AppSession, target: AppTarget) -> tuple[str, An
     if app.needs_settle or fresh or warming:
         app.needs_settle = False  # cleared before the wait: an action may set it again
         poll = FRESH_WINDOW_POLL_S if fresh else None
-        capture = mods.settle.wait(target, kind, read, poll=poll)
+        capture = mods.settle.wait(
+            target, kind, read, poll=poll, abandoned=call.abandoned
+        )
     if capture is None:  # no window at all raises here, after the wait
         capture = read(mods.windows.key_window(target))
     _check_page(app, capture)
@@ -357,7 +353,7 @@ def _act(
         unchecked, settled = app.page_unchecked and mods.policy.watches_urls(), None
         if app.needs_settle and (unchecked or call.name in SETTLE_BEFORE_KEYS):
             app.needs_settle = False
-            settled = mods.settle.wait(target, kind, read)
+            settled = mods.settle.wait(target, kind, read, abandoned=call.abandoned)
         if unchecked:
             _check_page(app, settled or read(mods.windows.key_window(target)))
         where = []
@@ -371,14 +367,11 @@ def _act(
             else:
                 where.append(app.shot.to_screen(*item))
         _still_wanted(call, planned)  # the settle and the lookups above took their time
-        doing, done = LABELS[call.name]
         mods.presence.pointer_activity("idle")
-        mods.presence.label(f"{doing} in {target.name}")
         # Set before the action: one that posted its events and then failed (the
         # person took over, the front app was not put back in time) changed the app too.
         app.needs_settle, app.page_unchecked = True, kind.http or kind.chromium
         send(app, *where)
-        mods.presence.label(f"{done} in {target.name}")
         mods.presence.pointer_activity("loading")
     return Result(ACTION_LINE)
 
@@ -541,23 +534,31 @@ def uninstall(call: Call) -> Result:
 
 
 def turn_started(call: Call) -> Result:
-    mods.person.turn_started(call.agent)
+    call.agent.signals_turns, call.agent.ended = True, False
     return Result("")
 
 
-def let_go(agent: AgentSession) -> None:
-    """The agent's turn is over, or the agent is gone: let go of every app it drove."""
+def let_go(agent: AgentSession, cancel: bool = True) -> None:
+    """The agent's turn is over, or the agent is gone: let go of every app it drove.
+
+    `cancel`: the action it still runs stops at its next event, and a host that says
+    when turns start gets no calls until the next one. Without it (Claude Code's Stop,
+    opencode's idle: background agents go on) the next action needs a new read.
+    """
+    if cancel:
+        agent.cancels += 1
+        agent.ended = agent.signals_turns
     mods.person.turn_ended(agent)
     for app in mods.helper.SESSIONS.apps(agent):
         with mods.helper.app_queue(app.target):
             _switch_off(app)
     mods.helper.SESSIONS.drop(agent)
-    if not mods.person.driven():  # another agent still drives an app: its rows stay
+    if not mods.person.driven():  # another agent still drives an app: its halo stays
         mods.presence.turn_done()
 
 
 def turn_ended(call: Call) -> Result:
-    let_go(call.agent)
+    let_go(call.agent, call.args["cancel"])
     return Result("")
 
 
@@ -566,70 +567,8 @@ def _named_app(call: Call) -> AppTarget | None:
     return mods.apps.resolve(name) if name else None
 
 
-# The process behind every tool call so far: (pid, start time) of the client's first
-# parent that is no shell or wrapper. Also written to callers.json in the state
-# folder, so that a helper started again (by `helper restart`, or after a kill) still
-# knows them. The start time tells a reused pid apart.
-_callers: set[tuple[int, float]] = set()
-
-
-def _callers_file():
-    return protocol.state_dir() / "callers.json"
-
-
-def _stored_callers() -> set[tuple[int, float]]:
-    try:
-        rows = json.loads(_callers_file().read_text("utf-8"))
-        return {(int(pid), float(start)) for pid, start in rows}
-    except (OSError, ValueError, TypeError):
-        return set()
-
-
-def _remember_caller(caller: tuple[int, float]) -> None:
-    """Keep the caller, on disk too. Callers whose process is gone are dropped there."""
-    if caller in _callers:
-        return
-    _callers.add(caller)
-    from .helper import process
-
-    def lives(pid: int, start: float) -> bool:
-        return (process(pid) or (0, "", None))[2] == start
-
-    kept = {row for row in _stored_callers() if lives(*row)} | {caller}
-    with contextlib.suppress(OSError):
-        folder = protocol.state_dir()
-        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-        draft = folder / "callers.tmp"
-        draft.write_text(json.dumps(sorted(kept)), "utf-8")
-        os.replace(draft, _callers_file())
-
-
-def _person_only(call: Call) -> None:
-    """Approve and resume are the person's: an agent that has used an app cannot lift
-    its own stop or approve itself, under another session name, through a script or
-    after restarting the helper. (The person's terminal has other parents.) A guard
-    against a model that follows a hint, not a wall: a process cut loose from its
-    parents, or one that edits the state folder, gets through."""
-    known = _callers | _stored_callers()
-    if call.agent.used_tools or call.agent.parents & known:
-        raise errors.person_only(call.name)
-
-
-def stop(call: Call) -> Result:
-    target = _named_app(call)
-    mods.person.stop(target)
-    return Result(f"Stopped {target.name if target else 'every app'}.")
-
-
-def resume(call: Call) -> Result:
-    _person_only(call)
-    target = _named_app(call)
-    mods.person.resume(target)
-    return Result(f"Resumed {target.name if target else 'every app'}.")
-
-
 def approve(call: Call) -> Result:
-    _person_only(call)
+    """The person approves an app ahead of time, for a run with nobody at the Mac."""
     target = _named_app(call)
     if target is None:
         raise errors.usage("app")
@@ -723,6 +662,7 @@ PARAMS = {
     "agent": ("str", "The agent CLI to install the skill for"),
     "scope": ("str", "project or user"),
     "always": ("bool", "Keep the approval after this session"),
+    "cancel": ("bool", "Also stop the action the agent still runs"),
     "tool": ("str", "A tool name"),
     "json": ("bool", "Print the result object as JSON"),
     "help": ("bool", "Show this text"),
@@ -874,9 +814,7 @@ COMMANDS = {
     "install": _tool(install, "agent scope", "agent", defaults={"scope": "user"}),
     "uninstall": _tool(uninstall, "agent scope", "agent", defaults={"scope": "user"}),
     "turn-started": _tool(turn_started),
-    "turn-ended": _tool(turn_ended),
-    "stop": _tool(stop, "app", "app"),
-    "resume": _tool(resume, "app", "app"),
+    "turn-ended": _tool(turn_ended, "cancel", defaults={"cancel": False}),
     "approve": _tool(approve, "app always", "app", defaults={"always": False}),
     "telemetry": _tool(telemetry, bare="action"),
     "help": _tool(show_help, bare="tool"),
@@ -988,15 +926,29 @@ def parse(argv: list[str]) -> tuple[str, dict[str, Any]]:
 # --- one call -------------------------------------------------------------------------
 
 
+# What a call says when its `abandoned` turned True: the helper's stop does that too.
+CANCELLED_BY = (errors.user_changed("").name, errors.request_timed_out().name)
+
+
 def execute(
-    argv: list[str], stdin: str | None, agent: AgentSession, cwd: str, deadline: float
+    argv: list[str],
+    stdin: str | None,
+    agent: AgentSession,
+    cwd: str,
+    deadline: float,
+    abandoned: Callable[[], bool] = lambda: False,
+    host_gone: Callable[[], bool] = lambda: False,
 ) -> Outcome:
-    """Run one call and say what to print. Raises only NeedStdin."""
-    as_json, name = "--json" in argv, None
+    """Run one call and say what to print. Raises only NeedStdin. `abandoned` turns
+    True once the client has gone: the running action then stops."""
+    as_json, name, cancels = "--json" in argv, None, agent.cancels
+    left = lambda: host_gone() or agent.cancels != cancels
     try:
         name, args = parse(argv)
         as_json = bool(args.pop("json", False))
         tool = _table()[name]
+        if agent.exited:
+            raise errors.agent_exited()
         if args.pop("help", False):
             name, args = "help", {"tool": None if name == "help" else name}
             tool = COMMANDS["help"]
@@ -1006,14 +958,15 @@ def execute(
             args.pop(tool.stdin, None)
             if stdin.removesuffix("\n"):  # a heredoc adds one newline: exactly one goes
                 args[tool.stdin] = stdin.removesuffix("\n")
-        if name in TOOLS:
-            agent.used_tools = True
-            if agent.caller:
-                _remember_caller(agent.caller)
-        result = tool.run(Call(name, args, agent, cwd, deadline))
+        cut = lambda: abandoned() or left()
+        result = tool.run(Call(name, args, agent, cwd, deadline, cut))
     except NeedStdin:
         raise
     except errors.HarnessError as error:
+        if error.name in CANCELLED_BY and mods.helper.STATE.stopping:
+            error = errors.helper_stopped()  # the client is still there and reads this
+        elif error.name in CANCELLED_BY and left():
+            error = errors.agent_left()
         return _failed(error, as_json, name)
     except Exception as error:  # noqa: BLE001 - every failure becomes a text for the model
         traceback.print_exc()

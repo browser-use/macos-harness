@@ -81,7 +81,10 @@ def test_press_the_app_did_not_answer_is_not_tried_again_as_events(monkeypatch):
     A second click on top of it could hit something else."""
     r = rig(monkeypatch, refuse={"AXPress": "AXError.cannotComplete"})
     text = message(r.actions.click, r.app, line(button(r)))
-    assert text == "The accessibility call failed: AXError.cannotComplete"
+    assert (
+        text
+        == "An accessibility request to the app failed (AXError.cannotComplete). Call `get_app_state` again; if it fails again, click by pixel or tell the user."
+    )
     assert r.events.posted == []
 
 
@@ -247,7 +250,7 @@ def test_hold_duration_held_key_clicks(monkeypatch):
     ]
 
 
-def test_hold_ends_early_when_the_person_stops_the_app(monkeypatch):
+def test_hold_ends_early_when_the_call_is_cancelled(monkeypatch):
     r = rig(monkeypatch)
     r.front[0] = APP_PID
     r.app.cancel = lambda: r.clock.now >= 1000.5
@@ -525,7 +528,10 @@ def test_menu_item_the_app_did_not_answer_for(monkeypatch):
     _, menu, item = menu_bar(r)
     r.windows.menu = menu
     text = message(r.actions.click, r.app, line(item))
-    assert text == "The accessibility call failed: AXError.cannotComplete"
+    assert (
+        text
+        == "An accessibility request to the app failed (AXError.cannotComplete). Call `get_app_state` again; if it fails again, click by pixel or tell the user."
+    )
     assert menu.performed == [] and r.windows.menu is None
 
 
@@ -856,7 +862,7 @@ def test_no_event_goes_to_a_process_the_policy_forbids(monkeypatch):
     save_panel(r)
     r.apps.bundles[777] = "com.apple.LocalAuthenticationRemoteService"
     r.policy.refused = {"com.apple.LocalAuthenticationRemoteService"}
-    with pytest.raises(errors.HarnessError, match="system security process"):
+    with pytest.raises(errors.HarnessError, match="system password or security window"):
         r.actions.press_key(r.app, "Return")
     assert [e for e in r.events.posted if e["pid"] == 777] == []
     r.policy.refused = set()
@@ -889,7 +895,7 @@ def test_no_accessibility_action_goes_to_a_process_the_policy_forbids(monkeypatc
             r.app, line(field, actions={"Confirm": "AXConfirm"}), "Confirm"
         ),
     }[how]
-    with pytest.raises(errors.HarnessError, match="system security process"):
+    with pytest.raises(errors.HarnessError, match="system password or security window"):
         call()
     assert (
         field.performed == []

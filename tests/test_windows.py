@@ -128,10 +128,13 @@ def test_no_capturable_window_explicit_error(rig):
     """An app with no window at all says so by name."""
     with pytest.raises(errors.HarnessError) as raised:
         windows.key_window(TARGET)
-    text = "macOS Harness error 100: The app has no window"
+    text = "macOS Harness error 100: The app has no open window. Open one with its menu or a shortcut, or tell the user."
     assert raised.value.message == text == errors.no_windows().message
     rig.app.attrs["AXWindows"] = []
-    with pytest.raises(errors.HarnessError, match="The app has no window"):
+    with pytest.raises(
+        errors.HarnessError,
+        match="The app has no open window. Open one with its menu or a shortcut, or tell the user.",
+    ):
         windows.key_window(TARGET)
 
 
@@ -158,7 +161,7 @@ def test_sheets_panels_same_app_appear_inside_state_their(rig):
 
 def test_a_target_that_is_not_running_has_no_window(rig):
     gone = AppTarget(TARGET.path, TARGET.bundle_id, TARGET.name, None)
-    with pytest.raises(errors.HarnessError, match="No running app matches"):
+    with pytest.raises(errors.HarnessError, match="is not running any more"):
         windows.key_window(gone)
 
 
@@ -310,7 +313,10 @@ def test_a_point_in_no_window(rig):
     assert raised.value.message == errors.window_not_found_at((900, 50)).message
     assert "No window of the app is at (900.0, 50.0)" in raised.value.message
     rig.app.attrs["AXWindows"] = []
-    with pytest.raises(errors.HarnessError, match="The app has no window"):
+    with pytest.raises(
+        errors.HarnessError,
+        match="The app has no open window. Open one with its menu or a shortcut, or tell the user.",
+    ):
         windows.at(TARGET, (10, 10))
 
 

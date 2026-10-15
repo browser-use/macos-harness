@@ -101,6 +101,15 @@ def test_everything_granted_returns_at_once_and_is_checked_once(mac):
     assert mac.opened == mac.requests == [] and mac.clock.time() == 1000.0
 
 
+def test_a_call_whose_client_is_gone_stops_waiting_for_the_grants(mac):
+    mac.granted["accessibility"] = False
+    with pytest.raises(errors.HarnessError) as refusal:  # not permissions_waiting:
+        gone = lambda: mac.clock.time() >= 1002.0  # that one stops the helper
+        permissions.gate(1120.0, clock=mac.clock, abandoned=gone)
+    assert refusal.value.name == "request_timed_out"
+    assert mac.clock.time() == pytest.approx(1002.0, abs=0.25)
+
+
 def test_while_permissions_pending_model_told_call_again_end(mac):
     mac.granted["accessibility"] = False
     refusal = mac.gate()

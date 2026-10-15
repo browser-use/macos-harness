@@ -91,7 +91,7 @@ def test_persisted_approval_honoured_silently_anything_but_accept_throws(world):
         ask(other, target=app("Mail"))
         world.prompts[-1]["answer"](word)
         refusal = ask(other, target=app("Mail"))
-        assert refusal.message == "The user did not allow macOS Harness to use Mail"
+        assert refusal.message == errors.not_approved("Mail").message
         assert refusal.cancelled
 
 
@@ -129,13 +129,23 @@ def test_action_runs_host_timeout_suspended(world):
     refusal = ask(who, clock=clock)
     assert clock.time() == pytest.approx(1110.0, abs=0.25)
     assert refusal.message == (
-        "The user has not yet answered the question on screen about macOS Harness and "
-        '"Notes". Call this tool again now, and do not end your turn.'
+        "Waiting for the user to allow Notes in the macOS Harness panel. Call this "
+        "tool again now, and do not end your turn."
     )
     assert ask(who).name == "approval_waiting"
     assert len(world.prompts) == 1  # the second call did not ask twice
     world.prompts[0]["answer"]("Allow for this session")
     assert ask(who) is None
+
+
+def test_a_call_whose_client_is_gone_stops_waiting_for_the_answer(world):
+    clock = Clock()
+    gone = lambda: clock.time() >= 1002.0
+    with pytest.raises(errors.HarnessError) as refusal:
+        approvals.ensure(agent(), NOTES, LOW, 1120.0, clock=clock, abandoned=gone)
+    assert refusal.value.name == "request_timed_out"
+    assert clock.time() == pytest.approx(1002.0, abs=0.25)
+    assert len(world.prompts) == 1  # the question stays for the next call
 
 
 def test_an_answer_ends_the_wait_at_the_next_poll(world):
@@ -166,10 +176,9 @@ def test_wrapper_refuses_run_without_host_approval_hooks(monkeypatch):
     refusal = ask(agent(), clock=clock)
     assert clock.time() == 1000.0
     assert refusal.message == (
-        'macOS Harness cannot ask the user to approve "Notes" because its on-screen '
-        'prompt is switched off. Ask the user to approve "Notes" in their own terminal '
-        "(`macos-harness approve`), then call this tool again. The command is refused "
-        "when you run it."
+        'macOS Harness cannot ask the user about "Notes" because its on-screen '
+        'panel is switched off. Ask the user to approve "Notes" in their own terminal, '
+        "then call this tool again."
     )
 
 
@@ -232,8 +241,9 @@ def test_older_gen_1_approval_texts_approval_store(monkeypatch):
     with pytest.raises(errors.HarnessError) as raised:
         approvals.approve("com.example.chess", always=True)
     assert raised.value.message == (
-        "macOS Harness could not persist the approval permanently for app "
-        "'com.example.chess'. It holds until the helper stops."
+        "macOS Harness could not save the approval of 'com.example.chess' to disk, "
+        "so it lasts only until the helper stops. Go on; the user can approve it again "
+        "later."
     )
     assert ask(agent(), target=app("Chess")) is None
 

@@ -14,7 +14,7 @@ from macos_harness import errors, install, tools
 from macos_harness.model import AgentSession
 
 ROOT = Path(__file__).resolve().parents[1]
-STARTED, ENDED = install.STARTED, install.ENDED
+STARTED, ENDED, CANCELLED = install.STARTED, install.ENDED, install.CANCELLED
 # Where each CLI reads a skill, a hooks file and a plugin. `~` is the temp home, a path
 # without it is inside the project folder. Measured per CLI, then written down here a
 # second time on purpose: a typo in the table of install.py must fail a test.
@@ -171,21 +171,33 @@ def test_hooks_tell_the_helper_when_a_turn_starts_and_ends(home, project):
     hooks = json.loads((project / ".claude/settings.local.json").read_text())["hooks"]
     assert hooks == {
         "UserPromptSubmit": [group(STARTED)],
-        "Stop": [group(ENDED)],
-        "SessionEnd": [group(ENDED)],
+        "Stop": [group(ENDED)],  # background agents go on after it: no cancel
+        "SessionEnd": [group(CANCELLED)],
     }
     install.install("codex", "project", str(project))
     hooks = json.loads((project / ".codex/hooks.json").read_text())["hooks"]
     assert hooks == {
         "UserPromptSubmit": [group(STARTED)],
         "Stop": [group(ENDED)],
-        "Interrupt": [group(ENDED)],
-        "SessionEnd": [group(ENDED)],
+        "Interrupt": [group(CANCELLED)],
+        "SessionEnd": [group(CANCELLED)],
     }
 
 
+def test_an_install_of_0_2_0_gets_the_cancelling_hook_in_place_of_its_own(
+    home, project
+):
+    hooks = project / ".codex/hooks.json"
+    hooks.parent.mkdir()
+    hooks.write_text(json.dumps({"hooks": {"Interrupt": [group(ENDED)]}}))
+    install.install("codex", "project", str(project))
+    [only] = json.loads(hooks.read_text())["hooks"]["Interrupt"]
+    [hook] = only["hooks"]
+    assert hook["command"].endswith(CANCELLED[len("macos-harness") :])
+
+
 def test_hook_commands_are_commands_the_tool_has():
-    for command in (STARTED, ENDED):
+    for command in (STARTED, ENDED, CANCELLED):
         argv = shlex.split(command.split(" >")[0])
         assert argv[0] == "macos-harness"
         assert tools.parse(argv[1:])[0] in tools.COMMANDS
@@ -197,7 +209,7 @@ def test_no_hook_on_a_subagent_event():
     assert "subagent" not in text
 
 
-@pytest.mark.parametrize("command", [STARTED, ENDED])
+@pytest.mark.parametrize("command", [STARTED, ENDED, CANCELLED])
 def test_a_hook_prints_nothing_and_never_fails(command):
     # Some CLIs read a hook's output or exit code 2 as an order. Here the command is not
     # even installed, which is the worst case.
@@ -229,7 +241,7 @@ def test_hooks_call_this_install_by_its_path_whatever_path_finds(
     hooks = json.loads(settings.read_text())["hooks"]
     assert hooks["Stop"] == [group(path + ENDED[len("macos-harness") :])]  # one hook
     pi = (project / ".pi/extensions/macos-harness.ts").read_text()
-    assert f"pi.exec({json.dumps(str(own / 'macos-harness'))}, [word])" in pi
+    assert f"pi.exec({json.dumps(str(own / 'macos-harness'))}, words)" in pi
     assert "${" in (project / ".opencode/plugins/macos-harness.js").read_text()
     install.uninstall(None, "project", str(project), env)
     assert tree(home, project) == {}
@@ -255,8 +267,8 @@ def test_a_run_from_uvs_cache_calls_us_by_name_and_says_so(
 def test_plugins_call_the_same_two_commands():
     pi, opencode = install.pi_extension(), install.opencode_plugin()
     assert 'pi.on("agent_start"' in pi and 'tell("turn-started")' in pi
-    assert 'pi.on("agent_end"' in pi and 'tell("turn-ended")' in pi
-    assert 'pi.exec("macos-harness", [word])' in pi
+    assert 'pi.on("agent_end"' in pi and 'tell("turn-ended", "--cancel")' in pi
+    assert 'pi.exec("macos-harness", words)' in pi
     assert 'event.type === "session.idle"' in opencode
     assert "$`macos-harness turn-ended`" in opencode
     for text in (pi, opencode):

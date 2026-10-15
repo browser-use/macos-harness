@@ -16,18 +16,21 @@ NAME = "macos-harness"
 # an order to block the prompt or to keep the turn going.
 STARTED = f"{NAME} turn-started >/dev/null 2>&1 || true"
 ENDED = f"{NAME} turn-ended >/dev/null 2>&1 || true"
+# Also stops the action still running. Not on Claude Code's Stop or opencode's idle:
+# those come at every turn end, while background agents of that turn go on.
+CANCELLED = f"{NAME} turn-ended --cancel >/dev/null 2>&1 || true"
 
 
 def pi_extension(command: str = NAME) -> str:
     return f"""\
 // Tells {NAME} when a turn starts and ends.
 export default function (pi) {{
-  const tell = (word) => pi.exec({json.dumps(command)}, [word]).catch(() => {{}});
+  const tell = (...words) => pi.exec({json.dumps(command)}, words).catch(() => {{}});
   pi.on("agent_start", async () => {{
     await tell("turn-started");
   }});
   pi.on("agent_end", async () => {{
-    await tell("turn-ended");
+    await tell("turn-ended", "--cancel");
   }});
 }}
 """
@@ -57,7 +60,7 @@ AGENTS = {
             "project": ".claude/settings.local.json",
             "user": "~/.claude/settings.json",
         },
-        "events": {"UserPromptSubmit": STARTED, "Stop": ENDED, "SessionEnd": ENDED},
+        "events": {"UserPromptSubmit": STARTED, "Stop": ENDED, "SessionEnd": CANCELLED},
     },
     "codex": {
         "skill": {"project": ".agents/skills", "user": "$CODEX_HOME/skills"},
@@ -65,8 +68,8 @@ AGENTS = {
         "events": {
             "UserPromptSubmit": STARTED,
             "Stop": ENDED,
-            "Interrupt": ENDED,
-            "SessionEnd": ENDED,
+            "Interrupt": CANCELLED,
+            "SessionEnd": CANCELLED,
         },
     },
     "pi": {
@@ -182,11 +185,13 @@ def hook_note() -> str | None:
     )
 
 
-def _ours(found: object, command: str) -> bool:
-    """Our hook command, by name or by the full path of any install of ours. A command
-    of the person's that only ends like ours (`notify; macos-harness ...`) is theirs."""
-    tail = command[command.index(" turn-") :]
-    if not isinstance(found, str) or not found.endswith(tail):
+def _ours(found: object) -> bool:
+    """One of our hook commands, by name or by the full path of any install of ours.
+    A command of the person's that only ends like ours (`notify; macos-harness ...`)
+    is theirs."""
+    tails = [c[c.index(" turn-") :] for c in (STARTED, ENDED, CANCELLED)]
+    tail = next((t for t in tails if isinstance(found, str) and found.endswith(t)), "")
+    if not tail:
         return False
     try:
         words = shlex.split(found[: -len(tail)])
@@ -231,9 +236,7 @@ def _hooks(path: Path, events: dict[str, str], add: bool) -> bool:
         for event, command in events.items():
             groups = []
             for group in hooks.get(event, []):
-                kept = [
-                    h for h in group["hooks"] if not _ours(h.get("command"), command)
-                ]
+                kept = [h for h in group["hooks"] if not _ours(h.get("command"))]
                 groups += [{**group, "hooks": kept}] if kept else []
             if add:
                 groups.append({"hooks": [{"type": "command", "command": command}]})

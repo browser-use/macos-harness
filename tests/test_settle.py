@@ -69,6 +69,15 @@ def test_native_floor_is_three_polls(rig):
     assert capture is rig.reads[0][1] and len(rig.reads) == 1
 
 
+def test_a_read_whose_client_is_gone_stops_waiting(rig):
+    rig.loading = True  # the app would keep it waiting the whole 5 s
+    with pytest.raises(errors.HarnessError) as refusal:
+        rig.wait(abandoned=lambda: rig.clock.elapsed >= 0.5)
+    assert refusal.value.name == "request_timed_out"
+    assert rig.clock.elapsed == pytest.approx(0.5)
+    assert rig.observer.stopped  # its observer goes with it
+
+
 def test_web_like_floor_is_one_poll(rig):
     assert rig.wait(WEB) is not None
     assert rig.clock.sleeps == [0.25]
@@ -118,6 +127,7 @@ def test_settle_primitive_takes_base_delay_notification_delay_scroll(rig):
         "quiet",
         "limit",
         "clock",
+        "abandoned",
     ]  # no scroll switch
     defaults = {name: p.default for name, p in parameters.items()}
     assert (defaults["poll"], defaults["quiet"], defaults["limit"]) == (None, 0.25, 5.0)

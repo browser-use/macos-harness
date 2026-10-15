@@ -53,9 +53,10 @@ macos-harness doctor
 ```
 
 Every call needs Accessibility and Screen Recording; `doctor` also reports two
-optional grants (sending events, and Input Monitoring for Escape twice). Grant only
-what it reports as missing. macOS gives them to the app that starts the harness (your
-terminal, or the agent's desktop app), and `doctor` names that app.
+optional grants (sending events, and Input Monitoring, which lets the agent step back
+when you use an app). Grant only what it reports as missing. macOS gives them to the
+app that starts the harness (your terminal, or the agent's desktop app), and `doctor`
+names that app.
 
 ## You stay in charge
 
@@ -71,11 +72,11 @@ terminal, or the agent's desktop app), and `doctor` names that app.
 
 - The harness never moves your pointer and never brings an app to the front. When you
   touch an app the agent is using, the agent is told to read it again first.
-- Stop the agent from the menu bar item, by pressing Escape twice, or with:
-
-  ```bash
-  macos-harness stop
-  ```
+- To stop the agent, interrupt it in its own app (Esc in Claude Code or Codex,
+  Ctrl+C in a terminal): the action it is running stops at its next key or click.
+  It also stops when the agent's app exits, on Codex's interrupt, when a Pi turn
+  ends and when a session ends. A command whose shell exits counts as abandoned:
+  `nohup macos-harness ... &` stops when the shell that started it exits.
 
 - Notes of your own for one app go into
   `~/Library/Application Support/macos-harness/instructions/<bundle id>.md`
