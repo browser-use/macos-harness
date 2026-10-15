@@ -161,11 +161,32 @@ def test_an_agent_whose_process_exited_is_forgotten_once():
     named = sessions.agent(50, {"MACOS_HARNESS_SESSION": "run-7"})
     assert sessions.gone() == []
     table[30] = (20, AGENT, 9999.0)  # the pid was given to a new process
+    table[40] = (30, "/bin/zsh", 9998.0)  # which started a shell of its own
     assert sessions.gone() == [agent] and sessions.gone() == []
     assert sessions.agent(50, {}) is not agent
     del table[30]
     assert len(sessions.gone()) == 1
     assert sessions.agent(50, {"MACOS_HARNESS_SESSION": "run-7"}) is named  # no process
+
+
+def test_a_shell_its_host_left_running_gets_no_session_of_its_own():
+    """The host died while its shell ran `get_app_state && click && type_text`. The
+    shell lives on under launchd: its next command is refused as a turn that is over,
+    not given a session of its own whose host never dies."""
+    table = {pid: (parent, path, 1000.0 + pid) for pid, parent, path in PLAIN}
+    sessions = helper.Sessions(process=table.get)
+    first = sessions.agent(50, {})
+    del table[30]
+    table[40] = (1, "/bin/zsh", 1040.0)  # the same shell, now under launchd
+    table[55] = (40, "/usr/bin/python3", 1055.0)  # its next command
+    orphan = sessions.agent(55, {})
+    assert (orphan.key, orphan.ended) == (first.key, True)
+    table[66] = (1, "/bin/sh", 1066.0)  # a launchd job that runs a shell itself
+    table[77] = (66, "/usr/bin/python3", 1077.0)
+    assert not sessions.agent(77, {}).ended
+    del table[40]
+    sessions.gone()
+    assert (40, 1040.0) not in sessions._shells  # a shell's record goes with it
 
 
 def test_the_real_process_table_and_the_real_socket_peer():
@@ -493,7 +514,7 @@ def slow_typing(served) -> list[str]:
         for key in text:
             if app.cancel():
                 typed.append("cancelled")
-                return
+                raise errors.user_changed(app.target.path)  # what a cancelled one says
             typed.append(key)
             time.sleep(0.01)
 
@@ -583,24 +604,24 @@ def test_a_call_whose_agent_process_died_stops_although_its_client_lives(served)
 def test_a_turn_end_stops_the_action_its_agent_left_running(served):
     """The host said the turn is over (Esc in Codex, or a host that ended its turn and
     left the command running): typing stops at the next key."""
-    typed = slow_typing(served)
+    typed, replies = slow_typing(served), []
     session = {"MACOS_HARNESS_SESSION": "cut"}
     assert call(message("get_app_state", "Demo", env=session))["result"]["exit"] == 0
-    client = subprocess.Popen(
-        [sys.executable, "-c", WAITING_CLIENT, "type_text", "Demo", "x" * 500]
-    )
-    try:
-        deadline = typing_began(typed)
-        ended = threading.Thread(
-            target=lambda: call(message("turn-ended", env=session)), daemon=True
+    typing = threading.Thread(
+        target=lambda: replies.append(
+            call(message("type_text", "Demo", "x" * 500, env=session))
         )
-        ended.start()
-        assert keys_until_cancelled(typed, deadline) <= 2
-        ended.join(2)
-        assert not ended.is_alive()  # it let go of the app once the action stopped
-    finally:
-        client.kill()
-        client.wait()
+    )
+    typing.start()
+    deadline = typing_began(typed)
+    ended = threading.Thread(target=lambda: call(message("turn-ended", env=session)))
+    ended.start()
+    assert keys_until_cancelled(typed, deadline) <= 2
+    ended.join(2)
+    typing.join(2)
+    assert not ended.is_alive()  # it let go of the app once the action stopped
+    # The host left the command running: its output may still be read.
+    assert replies[0]["result"]["stderr"] == errors.turn_ended().message + "\n"
 
 
 def test_a_killed_client_waiting_for_the_person_frees_the_app_within_a_second(served):

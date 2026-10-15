@@ -582,6 +582,12 @@ def test_exit_codes_and_the_error_object(world):
     )
 
 
+def test_a_call_after_the_turn_ended_is_refused_before_anyone_is_asked(active):
+    active.agent.ended = True
+    assert active.run("click", "Demo", "0")[2] == errors.turn_ended().message + "\n"
+    assert "approvals.ensure" not in active.names()
+
+
 def test_a_call_the_helper_s_stop_cut_short_says_the_helper_stopped(active):
     """Its client is still there and reads the reply: not "the user did something"."""
     active.person.answers["gate"] = errors.user_changed("/Applications/Demo.app")

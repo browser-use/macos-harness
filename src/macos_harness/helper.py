@@ -94,6 +94,8 @@ class Sessions:
         self.revisions = None  # the Revisions class. None: elements.Revisions
         self._agents: dict[str, AgentSession] = {}
         self._born: dict[str, tuple[int, float]] = {}  # key -> the agent's process
+        # (pid, start) of each shell between a client and its agent -> that agent
+        self._shells: dict[tuple[int, float], tuple[int, float]] = {}
         self._apps: dict[tuple[str, str], AppSession] = {}
         self._lock = threading.Lock()
 
@@ -117,6 +119,17 @@ class Sessions:
             parents = self._parents(peer_pid)
             if agent is None:
                 born = None if key else _agent_process(parents)
+                shells = [] if key else _shells(parents)
+                for shell in shells:
+                    host = self._shells.get(shell)
+                    if host and host != born and not self._runs(host):
+                        # The host died and left its shell running: the shell's next
+                        # command would open a session of its own and act on.
+                        return AgentSession(
+                            f"{host[0]}:{host[1]}", ended=True, signals_turns=True
+                        )
+                if born:
+                    self._shells.update(dict.fromkeys(shells, born))
                 key = key or (f"{born[0]}:{born[1]}" if born else "no-agent")
                 agent = self._agents.get(key)
             if agent is None:
@@ -134,6 +147,7 @@ class Sessions:
             born = dict(self._born)
         dead = [key for key, started in born.items() if not self._runs(started)]
         with self._lock:
+            self._shells = {s: b for s, b in self._shells.items() if self._runs(s)}
             for key in dead:
                 del self._born[key]
             return [self._agents.pop(key) for key in dead]
@@ -142,17 +156,15 @@ class Sessions:
         return (self.process(born[0]) or (0, "", None))[2] == born[1]
 
     def left(self, agent: AgentSession) -> Callable[[], bool]:
-        """A check that turns True once the agent's turn ended (its turn-ended hook,
-        Esc in Codex) or its process is gone. Some hosts leave an interrupted command
-        running, so the socket of its call stays open."""
-        turn, born = agent.turns_ended, self._born.get(agent.key)
-        looked, gone = 0.0, False
+        """A check that turns True once the agent's process is gone. Some hosts die on
+        Ctrl+C and leave their command running, so the socket of its call stays open."""
+        born, looked, gone = self._born.get(agent.key), 0.0, False
 
         def check() -> bool:
             nonlocal looked, gone
             if born and not gone and time.monotonic() - looked >= HOST_LOOK_S:
                 looked, gone = time.monotonic(), not self._runs(born)
-            return gone or agent.turns_ended != turn
+            return gone
 
         return check
 
@@ -182,6 +194,16 @@ def _agent_process(parents: list[tuple[int, str, float]]) -> tuple[int, float] |
         if os.path.basename(path).lstrip("-") not in WRAPPERS:
             return pid, start
     return None
+
+
+def _shells(parents: list[tuple[int, str, float]]) -> list[tuple[int, float]]:
+    """(pid, start time) of the shells and wrappers before the agent."""
+    shells = []
+    for pid, path, start in parents:
+        if os.path.basename(path).lstrip("-") not in WRAPPERS:
+            break
+        shells.append((pid, start))
+    return shells
 
 
 def _bundles(path: str) -> list[str]:

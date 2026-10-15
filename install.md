@@ -74,6 +74,11 @@ names that app.
   touch an app the agent is using, the agent is told to read it again first.
 - To stop the agent, interrupt it in its own app (Esc in Claude Code or Codex,
   Ctrl+C in a terminal): the action it is running stops at its next key or click.
+  It also stops when the agent's process ends or its turn ends, and a command
+  never outlives the shell that started it (`nohup macos-harness ... &` included).
+  Background subagents and teammates in one Claude Code process share its session:
+  its turn end stops their action too. One that works on after it can put
+  `MACOS_HARNESS_SESSION=<a name of its own>` before its commands.
 
 - Notes of your own for one app go into
   `~/Library/Application Support/macos-harness/instructions/<bundle id>.md`

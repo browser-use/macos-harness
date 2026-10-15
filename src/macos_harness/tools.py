@@ -166,6 +166,8 @@ def _session(call: Call, state_read: bool):
     agent = call.agent
     if not call.args.get("app", "").strip():  # checked last, after the tool's own
         raise errors.usage("app")
+    if agent.ended:  # before the approval: nobody asks the person for a dead turn
+        raise errors.turn_ended()
     target = mods.apps.resolve(call.args["app"])
     if target.bundle_id == PANEL_SERVICE:  # the panel of an app it reads
         seen = [app.watching for app in mods.helper.SESSIONS.apps(agent)]
@@ -930,7 +932,7 @@ def execute(
 ) -> Outcome:
     """Run one call and say what to print. Raises only NeedStdin. `abandoned` turns
     True once the client has gone: the running action then stops."""
-    as_json, name = "--json" in argv, None
+    as_json, name, turn = "--json" in argv, None, agent.turns_ended
     try:
         name, args = parse(argv)
         as_json = bool(args.pop("json", False))
@@ -944,12 +946,15 @@ def execute(
             args.pop(tool.stdin, None)
             if stdin.removesuffix("\n"):  # a heredoc adds one newline: exactly one goes
                 args[tool.stdin] = stdin.removesuffix("\n")
-        result = tool.run(Call(name, args, agent, cwd, deadline, abandoned))
+        cut = lambda: abandoned() or agent.turns_ended != turn
+        result = tool.run(Call(name, args, agent, cwd, deadline, cut))
     except NeedStdin:
         raise
     except errors.HarnessError as error:
         if error.name in CANCELLED_BY and mods.helper.STATE.stopping:
             error = errors.helper_stopped()  # the client is still there and reads this
+        elif error.name in CANCELLED_BY and agent.turns_ended != turn:
+            error = errors.turn_ended()
         return _failed(error, as_json, name)
     except Exception as error:  # noqa: BLE001 - every failure becomes a text for the model
         traceback.print_exc()
