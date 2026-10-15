@@ -538,6 +538,7 @@ def turn_started(call: Call) -> Result:
 
 def let_go(agent: AgentSession) -> None:
     """The agent's turn is over, or the agent is gone: let go of every app it drove."""
+    agent.turns_ended += 1  # an action it left running stops at its next event
     mods.person.turn_ended(agent)
     for app in mods.helper.SESSIONS.apps(agent):
         with mods.helper.app_queue(app.target):

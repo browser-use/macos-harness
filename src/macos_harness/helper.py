@@ -21,12 +21,14 @@ import threading
 import time
 import traceback
 from collections import deque
+from collections.abc import Callable
 
 from . import protocol, runloop, telemetry, tools
 from .model import AgentSession, AppSession, AppTarget
 
 IDLE_EXIT_S = 15 * 60.0  # no call for this long: exit
 IDLE_TICK_S = 5.0
+HOST_LOOK_S = 0.25  # how often a running call looks whether its agent still runs
 IO_TIMEOUT_S = 10.0  # per frame, read and write
 LOCK_WAIT_S = 5.0  # a helper that is on its way out still holds the lock
 EXIT_CAP_S = protocol.CALL_TIMEOUT_S + 10.0  # a stuck exit ends here
@@ -130,15 +132,29 @@ class Sessions:
         """Forget the agents whose process has exited, and return them."""
         with self._lock:
             born = dict(self._born)
-        dead = [
-            key
-            for key, (pid, start) in born.items()
-            if (self.process(pid) or (0, "", None))[2] != start
-        ]
+        dead = [key for key, started in born.items() if not self._runs(started)]
         with self._lock:
             for key in dead:
                 del self._born[key]
             return [self._agents.pop(key) for key in dead]
+
+    def _runs(self, born: tuple[int, float]) -> bool:
+        return (self.process(born[0]) or (0, "", None))[2] == born[1]
+
+    def left(self, agent: AgentSession) -> Callable[[], bool]:
+        """A check that turns True once the agent's turn ended (its turn-ended hook,
+        Esc in Codex) or its process is gone. Some hosts leave an interrupted command
+        running, so the socket of its call stays open."""
+        turn, born = agent.turns_ended, self._born.get(agent.key)
+        looked, gone = 0.0, False
+
+        def check() -> bool:
+            nonlocal looked, gone
+            if born and not gone and time.monotonic() - looked >= HOST_LOOK_S:
+                looked, gone = time.monotonic(), not self._runs(born)
+            return gone or agent.turns_ended != turn
+
+        return check
 
     def app(self, agent: AgentSession, target: AppTarget) -> AppSession:
         with self._lock:
@@ -393,7 +409,7 @@ def answer_for(
         if not accepted:
             return protocol.error(id, "stopping"), None
         agent = SESSIONS.agent(pid, env)
-        started = time.monotonic()
+        left, started = SESSIONS.left(agent), time.monotonic()
         try:
             outcome = tools.execute(
                 params.get("argv") or [],
@@ -401,7 +417,7 @@ def answer_for(
                 agent,
                 params.get("cwd") or "/",
                 deadline,
-                abandoned,
+                lambda: abandoned() or left(),
             )
         except tools.NeedStdin:
             return protocol.result(id, {"needStdin": True}), None

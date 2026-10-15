@@ -126,6 +126,7 @@ class AgentSession:
     key: str
     ended: bool = False  # a turn-ended signal arrived and no turn-started since
     signals_turns: bool = False  # this host has sent turn-started at least once
+    turns_ended: int = 0  # turn-ended signals so far: a call begun before one stops
     # bundle ids whose instruction file was printed
     instructed: set[str] = field(default_factory=set)
     # app paths the person refused in this turn

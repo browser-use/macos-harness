@@ -79,7 +79,8 @@ and it is all an agent needs to read.
   forbids terminal apps too
 - Notices when you touch an app the agent is using
 - Stops when its agent is interrupted: Esc or Ctrl+C in the agent's own app ends the
-  running action at its next key or click. There is no stop button of its own: an
+  running action at its next key or click, and so does the agent's process ending or
+  its turn ending while the command still runs. There is no stop button of its own: an
   agent nobody can interrupt (a headless or scheduled run) is stopped by ending its
   process
 - Limits worth knowing: pages on the `blocked_urls` list of a policy file are noticed

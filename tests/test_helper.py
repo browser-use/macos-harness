@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
+import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -482,9 +485,8 @@ with socket.socket(socket.AF_UNIX) as sock:
 """
 
 
-def test_a_killed_client_stops_its_running_action_at_the_next_key(served):
-    """The host's interrupt is the stop button: Ctrl+C or Esc ends the tool's process,
-    and a long type_text, hold or drag stops at its next event."""
+def slow_typing(served) -> list[str]:
+    """type_text types one key per 10 ms, 5 s for 500, and notes where it stopped."""
     typed = []
 
     def type_text(app, text):
@@ -496,22 +498,109 @@ def test_a_killed_client_stops_its_running_action_at_the_next_key(served):
             time.sleep(0.01)
 
     served.actions.answers["type_text"] = type_text
+    return typed
+
+
+def typing_began(typed: list[str]) -> float:
+    deadline = time.time() + 10
+    while len(typed) < 5:
+        assert time.time() < deadline, "typing never began"
+        time.sleep(0.005)
+    return deadline
+
+
+def keys_until_cancelled(typed: list[str], deadline: float) -> int:
+    at = len(typed)
+    while typed[-1] != "cancelled":
+        assert time.time() < deadline, "typing went on to the end"
+        time.sleep(0.005)
+    return len(typed) - at
+
+
+def test_a_killed_client_stops_its_running_action_at_the_next_key(served):
+    """The host's interrupt is the stop button: Ctrl+C or Esc ends the tool's process,
+    and a long type_text, hold or drag stops at its next event."""
+    typed = slow_typing(served)
     session = {"MACOS_HARNESS_SESSION": "cut"}
     assert call(message("get_app_state", "Demo", env=session))["result"]["exit"] == 0
     client = subprocess.Popen(
         [sys.executable, "-c", WAITING_CLIENT, "type_text", "Demo", "x" * 500]
     )
-    deadline = time.time() + 10
-    while len(typed) < 5:
-        assert time.time() < deadline, "typing never began"
-        time.sleep(0.005)
+    deadline = typing_began(typed)
     client.kill()
     client.wait()
-    at_kill = len(typed)
-    while typed[-1] != "cancelled":
-        assert time.time() < deadline, "typing went on after the client was killed"
-        time.sleep(0.005)
-    assert len(typed) - at_kill <= 2  # at most the key on its way, then no other
+    assert keys_until_cancelled(typed, deadline) <= 2  # the key on its way, no other
+
+
+# What a host runs: two calls, the second one left running. It prints that one's pid.
+HOST = """
+import json, subprocess, sys, time
+client = json.loads(sys.argv[1])
+subprocess.run(client + ["get_app_state", "Demo"], stdout=subprocess.DEVNULL)
+print(subprocess.Popen(client + ["type_text", "Demo", "x" * 500]).pid, flush=True)
+time.sleep(60)
+"""
+
+
+def keys_after_the_host_is_killed(served, client: list[str], env: dict) -> int:
+    """`codex exec` and `pi -p` die on Ctrl+C and leave their command running."""
+    typed = slow_typing(served)
+    host = subprocess.Popen(
+        [sys.executable, "-c", HOST, json.dumps(client)],
+        stdout=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    pid = None
+    try:
+        pid = int(host.stdout.readline())
+        deadline = typing_began(typed)
+        host.kill()
+        host.wait()
+        return keys_until_cancelled(typed, deadline)
+    finally:
+        host.kill()
+        if pid:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+
+
+def test_a_client_whose_host_died_ends_and_its_typing_stops(served):
+    """The client is a child of the host: it sees its parent go and exits."""
+    env = {**os.environ, "MACOS_HARNESS_SESSION": "cut"}  # the helper knows no process
+    assert keys_after_the_host_is_killed(served, fakes_a.CLIENT, env) < 40  # 0.4 s
+
+
+def test_a_call_whose_agent_process_died_stops_although_its_client_lives(served):
+    """A client that does not watch its parent (one with a shell between them): the
+    helper sees the agent's process go."""
+    waiting = WAITING_CLIENT.replace('{"MACOS_HARNESS_SESSION": "cut"}', "{}")
+    client = [sys.executable, "-c", waiting]
+    keys = keys_after_the_host_is_killed(served, client, dict(os.environ))
+    assert keys < 40  # 0.4 s: the helper looks every 0.25 s
+
+
+def test_a_turn_end_stops_the_action_its_agent_left_running(served):
+    """The host said the turn is over (Esc in Codex, or a host that ended its turn and
+    left the command running): typing stops at the next key."""
+    typed = slow_typing(served)
+    session = {"MACOS_HARNESS_SESSION": "cut"}
+    assert call(message("get_app_state", "Demo", env=session))["result"]["exit"] == 0
+    client = subprocess.Popen(
+        [sys.executable, "-c", WAITING_CLIENT, "type_text", "Demo", "x" * 500]
+    )
+    try:
+        deadline = typing_began(typed)
+        ended = threading.Thread(
+            target=lambda: call(message("turn-ended", env=session)), daemon=True
+        )
+        ended.start()
+        assert keys_until_cancelled(typed, deadline) <= 2
+        ended.join(2)
+        assert not ended.is_alive()  # it let go of the app once the action stopped
+    finally:
+        client.kill()
+        client.wait()
 
 
 def test_a_killed_client_waiting_for_the_person_frees_the_app_within_a_second(served):
