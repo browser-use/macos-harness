@@ -106,7 +106,7 @@ TEXTS: dict[str, tuple[int | None, str, str]] = {
     # apps and windows
     "invalid_app": (130, "no_such_app", "No app called {identifier} was found on this Mac. Call `list_apps` and use a name or bundle id from it."),
     "no_file_panel": (130, "no_such_app", "No app you have read shows an open or save panel now. Call `get_app_state` for the app that opened it, then act on the panel there."),
-    "agent_left": (111, "turn_ended", "Stopped: the agent's turn ended (or its app exited) during this action."),
+    "agent_left": (111, "turn_ended", "Stopped: the agent's turn ended (or its app exited) during this action. Do not act again until the user asks."),
     "agent_exited": (111, "agent_exited", "The agent that started this command has exited, so {product} ignores it."),
     "app_not_running": (131, "app_not_running", "{identifier} is not running any more: it quit or crashed. Call `get_app_state` to open it again."),
     "accessibility": (132, "accessibility_failed", "An accessibility request to the app failed ({ax_error_name}). Call `get_app_state` again; if it fails again, click by pixel or tell the user."),

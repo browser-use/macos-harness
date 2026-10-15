@@ -62,7 +62,10 @@ TEXTS = [
         (),
         111,
         "turn_ended",
-        "Stopped: the agent's turn ended (or its app exited) during this action.",
+        (
+            "Stopped: the agent's turn ended (or its app exited) during this action. Do not act "
+            "again until the user asks."
+        ),
     ),
     (
         "agent_exited",
