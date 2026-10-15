@@ -505,6 +505,35 @@ def idle_loop(clock=time) -> None:
 
 # --- start and exit -------------------------------------------------------------------
 
+LAZY = "createFrameworkDirAndGetattr.<locals>.__getattr__"  # PyObjC's lookup of a name
+
+
+def one_lookup_at_a_time(modules=None) -> None:
+    """PyObjC binds a framework's function or constant on its first use, and two
+    threads that look up the same name at once can fail (`KeyError:
+    'AXUIElementCreateApplication'`: its table entry was popped by the other). One
+    lock makes these first lookups take turns. Calls run on threads of their own."""
+    if modules is None:
+        import AppKit  # noqa: F401 - these four pull in every framework we use
+        import ApplicationServices  # noqa: F401
+        import Foundation  # noqa: F401
+        import Quartz  # noqa: F401
+
+        modules = list(sys.modules.values())
+    lock = threading.RLock()
+    for module in modules:
+        names = getattr(module, "__dict__", {})
+        lazy = names.get("__getattr__")
+        if getattr(lazy, "__qualname__", "").endswith(LAZY):
+            names["__getattr__"] = functools.partial(_looked_up, lock, names, lazy)
+
+
+def _looked_up(lock, names: dict, lazy, name: str):
+    with lock:
+        if name in names:  # another thread bound it while this one waited
+            return names[name]
+        return lazy(name)
+
 
 def _take_lock() -> int | None:
     """The lock that makes this the one helper of its socket. None: another one lives."""
@@ -574,6 +603,7 @@ def main() -> None:
     try:
         sock = _bind()
         log("helper started, pid", os.getpid(), protocol.socket_path())
+        _quietly(one_lookup_at_a_time)  # before any thread of its own starts
         _quietly(lambda: mods.pasteboard.restore_saved())
         _quietly(lambda: mods.screenshot.cleanup())
         _quietly(lambda: mods.person.start_watch(os.getpid()))

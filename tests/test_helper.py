@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 
 import fakes_a
 import pytest
@@ -238,6 +239,82 @@ def test_a_chain_its_dead_host_left_running_is_refused_but_a_launchd_job_is_not(
     starter.wait()  # gone before its shell's first command: that shell is launchd's
     job_go.touch()
     assert json.loads(starter.stdout.readline())["exit"] == 0
+
+
+def lazy_module(slow=0.05) -> types.ModuleType:
+    """A framework module as PyObjC builds it: a name is bound on first use, and its
+    table entry is popped then."""
+    module = types.ModuleType("Framework")
+    names = vars(module)
+
+    def createFrameworkDirAndGetattr():  # the name PyObjC gives it
+        funcmap = {"AXUIElementCreateApplication": "b@i"}
+
+        def __getattr__(name):
+            if name in funcmap:
+                time.sleep(slow)  # loading the function from the bundle
+                funcmap.pop(name)
+                names[name] = f"bound {name}"
+                return names[name]
+            raise AttributeError(name)
+
+        return __getattr__
+
+    names["__getattr__"] = createFrameworkDirAndGetattr()
+    return module
+
+
+def first_use_from_eight_threads(module) -> list:
+    start, results = threading.Barrier(8), []
+
+    def use():
+        start.wait()
+        try:
+            results.append(module.AXUIElementCreateApplication)
+        except Exception as error:  # noqa: BLE001 - what each thread saw
+            results.append(error)
+
+    threads = [threading.Thread(target=use) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    return results
+
+
+def test_eight_threads_that_first_use_one_name_at_once_all_get_it():
+    raced = first_use_from_eight_threads(lazy_module())
+    assert any(isinstance(r, KeyError) for r in raced)  # the bug, without the lock
+    module = lazy_module()
+    helper.one_lookup_at_a_time([module, os])  # a plain module is left alone
+    assert (
+        first_use_from_eight_threads(module)
+        == ["bound AXUIElementCreateApplication"] * 8
+    )
+    with pytest.raises(AttributeError):
+        getattr(module, "NoSuchName")  # noqa: B009
+
+
+def test_the_real_frameworks_get_the_lock():
+    pytest.importorskip("ApplicationServices")
+    helper.one_lookup_at_a_time()
+    import AppKit
+    import ApplicationServices
+    import CoreFoundation
+    import Foundation
+    import HIServices
+    import Quartz
+
+    for module in (
+        AppKit,
+        ApplicationServices,
+        CoreFoundation,
+        Foundation,
+        HIServices,
+        Quartz,
+    ):
+        assert vars(module)["__getattr__"].func is helper._looked_up
+    assert ApplicationServices.AXUIElementCreateApplication  # still finds names
 
 
 def test_the_real_process_table_and_the_real_socket_peer():
