@@ -86,7 +86,7 @@ def test_envelope_is_json_rpc_with_argv_and_an_absolute_deadline(monkeypatch):
         "env",
     }
     assert params["callerApi"] == "MacosHarnessIPC-1"
-    assert params["clientVersion"] == "0.2.0"
+    assert params["clientVersion"] == "0.2.1"
     assert params["clientPath"] == os.path.dirname(protocol.__file__)
     assert params["deadlineMs"] == int(deadline * 1000)
     assert params["argv"] == ["click", "--app", "X"] and params["stdin"] is None
@@ -166,7 +166,7 @@ def test_version_mismatch_text_says_what_to_do():
     assert "macos-harness helper restart" in error["message"]
     assert error["data"] == {
         "apiVersion": "MacosHarnessIPC-1",
-        "version": "0.2.0",
+        "version": "0.2.1",
         "path": os.path.dirname(protocol.__file__),
     }
 

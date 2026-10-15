@@ -140,7 +140,7 @@ def test_the_client_imports_only_what_it_was_given():
     top, inner = imports(SRC / "protocol.py")
     assert top - {"__future__"} == {"json", "os", "struct", "__version__"}
     assert inner == {"pathlib"}
-    assert (SRC / "__init__.py").read_text().strip() == '__version__ = "0.2.0"'
+    assert (SRC / "__init__.py").read_text().strip() == '__version__ = "0.2.1"'
 
 
 POISON = """
@@ -188,7 +188,7 @@ def test_version_needs_no_helper():
         env=env(),
         timeout=30,
     )
-    assert (done.returncode, done.stdout, done.stderr) == (0, "0.2.0\n", "")
+    assert (done.returncode, done.stdout, done.stderr) == (0, "0.2.1\n", "")
     assert not os.path.exists(protocol.socket_path())  # none was started
 
 
@@ -468,7 +468,7 @@ def test_a_helper_of_another_version_is_replaced_and_the_call_runs_once(helper_p
     new = helper_pid()
     assert new not in (None, old.pid)
     info = cli._ping(cli._try_connect())
-    assert info["version"] == "0.2.0"
+    assert info["version"] == "0.2.1"
 
 
 def test_a_helper_that_cannot_start_gives_the_text_with_the_retry_count(private_state):
@@ -545,7 +545,7 @@ def test_helper_status_stop_restart(helper_process):
     assert client("helper", "stop").stdout == "not running\n"
     restarted = client("helper", "restart")
     pid = helper_pid()
-    assert restarted.stdout.startswith(f"running: pid {pid}, version 0.2.0, ")
+    assert restarted.stdout.startswith(f"running: pid {pid}, version 0.2.1, ")
     assert client("helper", "status").stdout == restarted.stdout
     assert client("helper", "restart").returncode == 0
     assert helper_pid() not in (None, pid)
